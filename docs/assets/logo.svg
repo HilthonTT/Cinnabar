@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="redis-clone icon">
+  <title>redis-clone</title>
+  <rect width="128" height="128" rx="24" fill="#150A1C"/>
+  <!-- Three stacked key-value slabs in C# purple -->
+  <g>
+    <path d="M64 74l32 12l-32 12l-32-12z" fill="#B57BD6"/>
+    <path d="M32 86v10l32 12v-10z" fill="#4A1659"/>
+    <path d="M96 86v10l-32 12v-10z" fill="#7B3A8C"/>
+    <path d="M64 52l32 12l-32 12l-32-12z" fill="#B57BD6"/>
+    <path d="M32 64v10l32 12v-10z" fill="#4A1659"/>
+    <path d="M96 64v10l-32 12v-10z" fill="#7B3A8C"/>
+    <path d="M64 30l32 12l-32 12l-32-12z" fill="#D7A9F0"/>
+    <path d="M32 42v10l32 12v-10z" fill="#68217A"/>
+    <path d="M96 42v10l-32 12v-10z" fill="#9B4F96"/>
+  </g>
+  <path d="M64 36l8 3l-8 3l-8-3z" fill="#FFFFFF" opacity=".9"/>
+</svg>

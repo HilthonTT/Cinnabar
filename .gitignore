@@ -416,3 +416,7 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Cinnabar snapshots written when running locally
+**/data/*.rdb
+*.rdb.tmp

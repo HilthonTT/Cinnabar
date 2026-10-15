@@ -1,301 +1,186 @@
-# 🔴 RedisClone
+<p align="center">
+  <img src="docs/assets/logo.svg" width="128" height="128" alt="Cinnabar logo">
+</p>
 
-A Redis server implementation built from scratch in C#/.NET 10 — complete with RESP protocol parsing, key-value storage, lists, streams, pub/sub messaging, master-replica replication, RDB persistence, and a dedicated async client library.
+<h1 align="center">Cinnabar</h1>
 
-Built as a deep-dive into distributed systems internals: binary protocol parsing, concurrent data structures, replication logs, and connection pooling.
+<p align="center">
+  A Redis-compatible in-memory data store written from scratch in C# / .NET 10,<br>
+  with a pooled async client library.
+</p>
 
 ---
 
-## Architecture
+Cinnabar speaks RESP2, the Redis wire protocol, so `redis-cli` and existing Redis client
+libraries can talk to it. It implements strings, lists, streams, pub/sub, transactions,
+key expiry, master–replica replication and RDB snapshots. It is a learning project that
+takes protocol parsing, concurrency, replication and persistence seriously, not a drop-in
+production replacement for Redis. See [Limitations](#limitations).
 
+> **Why "Cinnabar"?** Cinnabar is the bright red mineral that gave vermilion its colour: a
+> nod to Redis (the red database) without borrowing its name.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Features](#features)
+- [Using the client library](#using-the-client-library)
+- [Project layout](#project-layout)
+- [Building and testing](#building-and-testing)
+- [Limitations](#limitations)
+- [Documentation](#documentation)
+
+## Quick start
+
+**Prerequisites:** the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+Docker is optional.
+
+```bash
+# Run the server on port 6379
+dotnet run --project src/Cinnabar.Server
+
+# Talk to it with redis-cli, or even plain netcat (inline commands are supported)
+redis-cli -p 6379 SET greeting "hello" EX 60
+redis-cli -p 6379 GET greeting
+printf 'PING\r\n' | nc localhost 6379
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        RedisClone.CLI                            │
-│                         (The Server)                             │
-│                                                                  │
-│  ┌──────────┐  ┌───────────────┐  ┌───────────────────────────┐  │
-│  │ TCP      │  │ RESP Parser   │  │ Command Handlers          │  │
-│  │ Listener │──│ (wire → cmd)  │──│ GET SET LPUSH XADD ...    │  │
-│  └──────────┘  └───────────────┘  └──────────┬────────────────┘  │
-│                                              │                   │
-│  ┌───────────────────────────────────────────┼───────────────┐   │
-│  │                    Storage Layer           │              │   │
-│  │  ┌───────────┐  ┌─────────────┐  ┌────────┴────────────┐  │   │
-│  │  │ KvpStorage│  │ ListStorage │  │  StreamStorage      │  │   │
-│  │  │ (strings) │  │ (lists)     │  │  (append-only log)  │  │   │
-│  │  └───────────┘  └─────────────┘  └─────────────────────┘  │   │
-│  └───────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │ PubSub       │  │ Replication  │  │ RDB Persistence        │  │
-│  │ (fan-out +   │  │ (master →    │  │ (binary snapshot       │  │
-│  │  work-queue) │  │  replica log)│  │  load on startup)      │  │
-│  └──────────────┘  └──────────────┘  └────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────────────┐
-│                       RedisClone.Client                          │
-│                      (C# Client Library)                         │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │ RedisClient  │  │ Connection   │  │ RESP Reader/Writer     │  │
-│  │ (typed API)  │──│ Pool         │──│ (System.IO.Pipelines)  │  │
-│  └──────────────┘  └──────────────┘  └────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────────────────────────────────┐  │
-│  │ PubSub       │  │ DI Extensions (Blazor / ASP.NET Core)    │  │
-│  │ Subscriber   │  │ builder.Services.AddRedisClient(...)     │  │
-│  └──────────────┘  └──────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
+Common options (`--help` lists them all; see [docs/configuration.md](docs/configuration.md)):
+
+```bash
+dotnet run --project src/Cinnabar.Server -- --port 6380 --requirepass s3cret
+dotnet run --project src/Cinnabar.Server -- --dir ./data --save-interval 60
+dotnet run --project src/Cinnabar.Server -- --port 6380 --replicaof localhost 6379
+dotnet run --project src/Cinnabar.Server -- --config cinnabar.json
+```
+
+With Docker Compose (server, plus a sample web API on <http://localhost:8080/swagger>):
+
+```bash
+docker compose up --build
 ```
 
 ## Features
 
-### Server (RedisClone.CLI)
+| Area | What you get |
+|------|--------------|
+| **Data types** | Strings (`GET`, `SET` with `NX`/`XX`/`EX`/`PX`/`EXAT`/`PXAT`/`KEEPTTL`, `INCR`…), lists (`LPUSH`, `RPOP`, `LRANGE`, blocking `BLPOP`/`BRPOP`…), streams (`XADD`, `XRANGE`, blocking `XREAD`) |
+| **Keys** | `DEL`, `EXISTS`, `TYPE`, `KEYS` with glob patterns, `EXPIRE`/`PEXPIRE`/`EXPIREAT`/`PEXPIREAT`, `PERSIST`, `TTL`/`PTTL` on every type |
+| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` with fan-out to every subscriber |
+| **Transactions** | `MULTI` / `EXEC` / `DISCARD`, with `EXECABORT` for commands rejected while queueing |
+| **Replication** | `--replicaof` full sync (snapshot plus command stream), read-only replicas, `WAIT`, automatic reconnect |
+| **Persistence** | RDB snapshots: load on start, `SAVE`/`BGSAVE`, periodic and on-shutdown saves, atomic writes, CRC-64 check; reads LZF-compressed Redis dumps |
+| **Security** | `requirepass` + `AUTH [user] pass` (constant-time comparison), per-IP and total connection limits, per-IP command rate limiting |
+| **Operations** | Prometheus metrics on `:9090/metrics`, `INFO`, `CONFIG GET`, structured console logging, graceful shutdown on Ctrl+C / SIGTERM |
+| **Client** | Pooled async .NET client, dedicated-connection pub/sub as `IAsyncEnumerable`, transactions, DI registration |
 
-**Data Structures**
-- **Strings** — `GET`, `SET` with optional `PX` millisecond expiry, background eviction timer
-- **Lists** — `LPUSH`, `RPUSH`, `LPOP`, `LLEN`, `LRANGE` (negative indices), `BLPOP` (blocking pop with timeout)
-- **Streams** — `XADD` with explicit, partial-auto (`timestamp-*`), or fully-auto (`*`) entry IDs, monotonic ordering validation
+The full command reference is in [docs/commands.md](docs/commands.md).
 
-**Pub/Sub**
-- `SUBSCRIBE` / `UNSUBSCRIBE` / `PUBLISH` with fan-out delivery
-- Work-queue semantics for `BLPOP` (first idle subscriber wins)
-- Per-connection subscribed mode with dedicated broadcast loop
-
-**Replication**
-- Master-replica topology with `PSYNC` handshake and RDB transfer
-- Replication log with binary-search offset lookup and sequential command propagation
-- `WAIT` command — block until N replicas acknowledge a given offset
-- `REPLCONF ACK` with backoff-based offset synchronization
-
-**Persistence**
-- RDB file parser supporting databases, string values, millisecond and second expiry timestamps
-- Length-encoded integers (6-bit, 14-bit, 32-bit) and special integer encodings
-- Automatic backup loading on server startup
-
-**Server Infrastructure**
-- Async TCP listener with concurrent client connections
-- RESP protocol serialization (simple strings, bulk strings, arrays, integers, errors)
-- Command validation via attributes (`[Argument]`, `[ReplicationRole]`, `[SupportedInSubscribedMode]`)
-- DI-based command handler registry with `FrozenDictionary` dispatch
-- Configurable via CLI args (`--port`, `--replicaof`, `--dir`, `--dbfilename`) and JSON settings
-
-### Client Library (RedisClone.Client)
-
-- **Streaming RESP parser** built on `System.IO.Pipelines` — handles partial TCP reads, binary-safe bulk strings, nested arrays
-- **Bounded connection pool** — async semaphore-gated, lazy creation, automatic dead-connection recycling
-- **Typed async API** — `GetAsync`, `SetAsync`, `LPushAsync`, `RPushAsync`, `LPopAsync`, `BLPopAsync`, `LLenAsync`, `LRangeAsync`, `XAddAsync`, `TypeAsync`, `KeysAsync`, `PublishAsync`, `ConfigGetAsync`, `EchoAsync`, `PingAsync`
-- **Pub/Sub subscriber** — dedicated connection, `IAsyncEnumerable<RedisMessage>` message stream
-- **Raw command execution** — `ExecuteAsync(string[])` for any command not covered by the typed API
-- **DI integration** — `AddRedisClient()` extension for Blazor / ASP.NET Core with options delegate or connection string
-
-## Getting Started
-
-### Prerequisites
-
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- [Docker](https://www.docker.com/) (optional, for containerized deployment)
-
-### Run the Server
-
-```bash
-# Default (port 6379)
-dotnet run --project src/RedisClone.CLI
-
-# Custom port
-dotnet run --project src/RedisClone.CLI -- --port 6380
-
-# As a replica
-dotnet run --project src/RedisClone.CLI -- --port 6380 --replicaof "localhost 6379"
-
-# Custom persistence
-dotnet run --project src/RedisClone.CLI -- --dir /data --dbfilename dump.rdb
-```
-
-### Use the Client Library
+## Using the client library
 
 ```csharp
-using RedisClone.Client;
+using Cinnabar.Client;
 
 await using var client = new RedisClient("localhost", 6379);
 
-// Strings
-await client.SetAsync("name", "hans");
-await client.SetAsync("session", "token", TimeSpan.FromMinutes(30));
-string? name = await client.GetAsync("name");
+// Strings and expiry
+await client.SetAsync("session:42", "token", TimeSpan.FromMinutes(30));
+string? token = await client.GetAsync("session:42");
+bool acquired = await client.SetIfNotExistsAsync("lock:report", "worker-1", TimeSpan.FromSeconds(10));
 
-// Lists
-await client.RPushAsync("tasks", "build", "test", "deploy");
-long length = await client.LLenAsync("tasks");
-List<string?> all = await client.LRangeAsync("tasks");
-string? next = await client.LPopAsync("tasks");
-
-// Blocking pop (waits for data)
-var result = await client.BLPopAsync("jobs", timeoutSeconds: 30);
-if (result is not null)
-    Console.WriteLine($"{result.Value.Key}: {result.Value.Value}");
+// Lists and blocking pops
+await client.RPushAsync("jobs", "resize", "upload");
+(string Key, string Value)? job = await client.BLPopAsync(["jobs"], TimeSpan.FromSeconds(5));
 
 // Streams
-string? id = await client.XAddAsync("events", new()
-{
-    ["action"] = "click",
-    ["page"] = "/home",
-});
+string id = await client.XAddAsync("events", [new("action", "click"), new("page", "/home")]);
+List<RedisStreamEntry> recent = await client.XRangeAsync("events", count: 10);
+
+// Transactions run on a single connection
+var results = await client.ExecuteTransactionAsync([["INCR", "visits"], ["EXPIRE", "visits", "60"]]);
 
 // Pub/Sub
-await client.PublishAsync("notifications", "hello world");
-await using var sub = await client.SubscribeAsync("notifications");
-await foreach (var msg in sub.Messages())
-    Console.WriteLine($"[{msg.Channel}] {msg.Message}");
-```
-
-### Blazor / ASP.NET Core Integration
-
-```csharp
-// Program.cs
-using RedisClone.Client.DependencyInjection;
-
-builder.Services.AddRedisClient(options =>
+await using var subscriber = await client.SubscribeAsync("news");
+await client.PublishAsync("news", "hello");
+await foreach (var message in subscriber.Messages())
 {
-    options.Host = "localhost";
-    options.Port = 6379;
-    options.PoolSize = 20;
-});
-```
-
-```csharp
-// Inject anywhere
-public class TaskService(RedisClient redis)
-{
-    public Task<long> AddAsync(string task) => redis.RPushAsync("tasks", task);
-    public Task<List<string?>> AllAsync() => redis.LRangeAsync("tasks");
-    public Task<string?> NextAsync() => redis.LPopAsync("tasks");
+    Console.WriteLine($"{message.Channel}: {message.Message}");
+    break;
 }
 ```
 
-### Docker
+ASP.NET Core / Blazor registration:
 
-```bash
-docker compose up
+```csharp
+using Cinnabar.Client.DependencyInjection;
+
+builder.Services.AddRedisClient("localhost:6379");            // or
+builder.Services.AddRedisClient(o => { o.Host = "cinnabar"; o.PoolSize = 20; o.Password = "s3cret"; });
 ```
 
-```yaml
-# docker-compose.yml
-services:
-  redisclone:
-    build:
-      context: .
-      dockerfile: src/RedisClone.CLI/Dockerfile
-    ports:
-      - "6379:6379"
+The client is plain RESP2, so it also works against a real Redis server. More in
+[docs/client.md](docs/client.md).
 
-  webapp:
-    build:
-      context: .
-      dockerfile: src/WebApp.Example/Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      - Redis__Host=redisclone
-    depends_on:
-      - redisclone
-```
-
-## Supported Commands
-
-| Category | Commands |
-|----------|----------|
-| **Strings** | `GET` `SET` (with `PX` expiry) |
-| **Lists** | `LPUSH` `RPUSH` `LPOP` `BLPOP` `LLEN` `LRANGE` |
-| **Streams** | `XADD` (explicit, auto-sequence, fully-auto IDs) |
-| **Pub/Sub** | `SUBSCRIBE` `UNSUBSCRIBE` `PUBLISH` |
-| **Keys** | `TYPE` `KEYS` |
-| **Server** | `PING` `ECHO` `CONFIG GET` `INFO` `WAIT` |
-| **Replication** | `PSYNC` `REPLCONF` |
-
-## Project Structure
+## Project layout
 
 ```
+Cinnabar.slnx
 ├── src/
-│   ├── RedisClone.CLI/              # The Redis server
-│   │   ├── Commands/
-│   │   │   ├── Handlers/            # One handler per command
-│   │   │   │   ├── Validation/      # [Argument], [ReplicationRole] attributes
-│   │   │   │   ├── Get.cs
-│   │   │   │   ├── Set.cs
-│   │   │   │   ├── LPush.cs
-│   │   │   │   ├── BLPop.cs
-│   │   │   │   ├── XAdd.cs
-│   │   │   │   ├── Subscribe.cs
-│   │   │   │   └── ...
-│   │   │   ├── Command.cs           # RESP parser
-│   │   │   └── CommandProcessor.cs  # FrozenDictionary dispatch
-│   │   ├── Storage/
-│   │   │   ├── KvpStorage.cs        # ConcurrentDictionary + TTL eviction
-│   │   │   ├── ListStorage.cs       # ConcurrentDictionary<LinkedList>
-│   │   │   ├── StreamStorage.cs     # Append-only log with SortedSet timestamps
-│   │   │   └── StorageManager.cs    # Unified key/type lookup
-│   │   ├── Subscriptions/
-│   │   │   └── PubSub.cs            # Fan-out + work-queue delivery
-│   │   ├── Replication/
-│   │   │   ├── MasterManager.cs     # Propagation loop + WAIT
-│   │   │   ├── ReplicaManager.cs    # Handshake + command processing
-│   │   │   └── ReplicationLog.cs    # Offset-tracked binary log
-│   │   ├── Persistence/
-│   │   │   └── RdbParser.cs         # Binary RDB format reader
-│   │   └── Server/
-│   │       ├── Server.cs            # TCP accept loop
-│   │       └── TcpConnectionWorker.cs
-│   │
-│   ├── RedisClone.Client/           # C# client library
-│   │   ├── Protocol/
-│   │   │   ├── RespReader.cs        # PipeReader-based streaming parser
-│   │   │   ├── RespWriter.cs        # Command serializer
-│   │   │   └── RespValue.cs         # Typed RESP value union
-│   │   ├── Pooling/
-│   │   │   └── ConnectionPool.cs    # Bounded async pool
-│   │   ├── PubSub/
-│   │   │   └── RedisSubscriber.cs   # IAsyncEnumerable message stream
-│   │   ├── DependencyInjection/
-│   │   │   └── ServiceCollectionExtensions.cs
-│   │   ├── RedisClient.cs           # Public API surface
-│   │   └── RedisConnection.cs       # Single TCP + PipeReader/PipeWriter
-│   │
-│   └── WebApp.Example/              # ASP.NET Core test API
-│       └── Endpoints/               # Minimal API endpoints per command group
-│
-└── tests/
-    └── RedisClone.CLI.Tests/
-        ├── Handlers/                 # Per-handler unit tests
-        ├── Storage/                  # KvpStorage, ListStorage, StreamStorage
-        ├── Subscriptions/            # PubSub fan-out, work-queue, concurrency
-        ├── Replication/              # ReplicationLog offset tracking
-        ├── Commands/                 # RESP parsing, CommandProcessor
-        ├── Concurrency/              # Stress tests
-        └── Integration/              # Multi-command workflow tests
+│   ├── Cinnabar.Protocol/        RESP2 reader/encoder shared by server and client
+│   ├── Cinnabar.Storage/         Keyspace (strings, lists, streams, expiry) + RDB persistence
+│   ├── Cinnabar.Server/          The server executable
+│   │   ├── Commands/             Dispatcher + one folder per command family
+│   │   ├── Networking/           TCP listener, per-connection loop, client sessions
+│   │   ├── Replication/          Master streaming, replica link, write barrier
+│   │   ├── Persistence/          Snapshot load/save scheduling
+│   │   ├── PubSub/  Blocking/    Pub/sub broker, wake-ups for BLPOP/XREAD
+│   │   ├── Security/             Connection limits and rate limiting
+│   │   ├── Configuration/        Settings model and command-line parsing
+│   │   ├── Diagnostics/          Prometheus metrics
+│   │   └── Hosting/              CinnabarServer lifecycle and DI wiring
+│   └── Cinnabar.Client/          Pooled async client library
+├── tests/                        One test project per library, plus end-to-end integration tests
+├── samples/Cinnabar.Samples.WebApi/  Minimal API that exercises the client
+└── docs/                         Architecture, commands, configuration, client guide
 ```
 
-## Running Tests
+The dependency graph is one-directional: `Server → Storage, Protocol` and
+`Client → Protocol`. Storage knows nothing about networking, which keeps it easy to test.
+[docs/architecture.md](docs/architecture.md) explains how a command flows through the server.
+
+## Building and testing
 
 ```bash
-dotnet test
+dotnet build Cinnabar.slnx
+dotnet test Cinnabar.slnx
 ```
 
-The test suite covers storage layers, all command handlers, RESP protocol encoding, pub/sub delivery semantics, replication log offset tracking, argument validation, concurrent access patterns, and end-to-end multi-command workflows.
+| Test project | Covers |
+|---|---|
+| `Cinnabar.Protocol.Tests` | RESP parsing across split reads, limits, inline commands, encoding |
+| `Cinnabar.Storage.Tests` | Keyspace semantics, expiry with a fake clock, streams, glob matching, RDB round trips, concurrency |
+| `Cinnabar.Server.Tests` | Every command through the dispatcher, auth, transactions, blocking, configuration, rate limiting |
+| `Cinnabar.Client.Tests` | Connection strings, pooling and connection recovery against a fake server |
+| `Cinnabar.IntegrationTests` | Real server over TCP: client API, pipelining, pub/sub, blocking, auth, replication, persistence |
 
-## Technical Highlights
+## Limitations
 
-**RESP Protocol** — The client uses `System.IO.Pipelines` for zero-copy, backpressure-aware protocol parsing that correctly handles partial TCP reads and binary-safe bulk strings. The server currently uses a simpler string-split parser.
+Cinnabar deliberately implements a subset of Redis:
 
-**Replication** — Full master-to-replica flow: PSYNC handshake → empty RDB transfer → continuous command propagation via an append-only replication log with binary-search offset lookup. The `WAIT` command blocks until N replicas acknowledge a target offset.
+- **One database** (`SELECT 0` only) and no hashes, sets, sorted sets, Lua, ACL users or cluster mode.
+- **Values are text.** Keys and values are stored as UTF-8 strings, so binary payloads are not byte-exact.
+- **Transactions are not isolated.** Commands queued with `MULTI` run back to back, but other clients' commands can interleave, and there is no `WATCH`.
+- **Persistence covers strings and lists.** Streams are kept in memory but not written to snapshots. Real Redis dumps load if they contain only strings (including LZF-compressed and integer-encoded ones).
+- **Replication always does a full sync.** There is no partial resync backlog, and chained replicas are not supported.
 
-**Pub/Sub** — Two delivery modes sharing the same infrastructure: fan-out broadcast (every subscriber gets every message) for `SUBSCRIBE`, and work-queue delivery (first idle subscriber wins) for `BLPOP` notification.
+## Documentation
 
-**Connection Pooling** — The client pool uses `SemaphoreSlim` as a bounded async gate with lazy connection creation. Dead connections are detected on return and discarded. Pub/sub subscribers get dedicated non-pooled connections since Redis requires exclusive subscriber-mode connections.
-
-**Command Dispatch** — Handlers are registered via DI and indexed into a `FrozenDictionary<CommandType, ICommandHandler>` at startup. Validation attributes (`[Argument]`, `[ReplicationRole]`, `[SupportedInSubscribedMode]`) are reflected once and cached in a `ConcurrentDictionary`.
+- [Architecture](docs/architecture.md): components, request flow, concurrency, replication and persistence internals
+- [Command reference](docs/commands.md): every supported command with its syntax and notes
+- [Configuration](docs/configuration.md): command-line flags, JSON settings, Docker
+- [Client guide](docs/client.md): the .NET client library in depth
+- [Changelog](CHANGELOG.md): the rename from *redis-clone*, bug fixes and breaking changes
 
 ## License
 
-MIT
+[MIT](LICENSE)
