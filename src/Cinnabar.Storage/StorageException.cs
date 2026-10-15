@@ -6,7 +6,3 @@ namespace Cinnabar.Storage;
 /// and can be sent to the client as-is.
 /// </summary>
 public class StorageException(string message) : Exception(message);
-
-/// <summary>The key exists but holds a different type than the operation needs.</summary>
-public sealed class WrongTypeException()
-    : StorageException("WRONGTYPE Operation against a key holding the wrong kind of value");
