@@ -1,0 +1,27 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Cinnabar.Protocol/Cinnabar.Protocol.csproj" />
+    <Project Path="src/Cinnabar.Storage/Cinnabar.Storage.csproj" />
+    <Project Path="src/Cinnabar.Server/Cinnabar.Server.csproj" />
+    <Project Path="src/Cinnabar.Client/Cinnabar.Client.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Cinnabar.Protocol.Tests/Cinnabar.Protocol.Tests.csproj" />
+    <Project Path="tests/Cinnabar.Storage.Tests/Cinnabar.Storage.Tests.csproj" />
+    <Project Path="tests/Cinnabar.Server.Tests/Cinnabar.Server.Tests.csproj" />
+    <Project Path="tests/Cinnabar.Client.Tests/Cinnabar.Client.Tests.csproj" />
+    <Project Path="tests/Cinnabar.IntegrationTests/Cinnabar.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Cinnabar.Samples.WebApi/Cinnabar.Samples.WebApi.csproj" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path="README.md" />
+    <File Path="CHANGELOG.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="docker-compose.yml" />
+  </Folder>
+  <Project Path="docker-compose.dcproj">
+    <Build />
+  </Project>
+</Solution>
