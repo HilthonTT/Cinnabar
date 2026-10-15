@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cinnabar.Storage\Cinnabar.Storage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- FakeTimeProvider, to test expiry without sleeping. -->
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.0.0" />
+  </ItemGroup>
+
+</Project>
