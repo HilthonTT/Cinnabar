@@ -1,16 +1,26 @@
 services:
-  redisclone.cli:
-    image: ${DOCKER_REGISTRY-}redisclonecli
+  cinnabar:
+    image: ${DOCKER_REGISTRY-}cinnabar
     build:
       context: .
-      dockerfile: src/RedisClone.CLI/Dockerfile
+      dockerfile: src/Cinnabar.Server/Dockerfile
     ports:
-      - "6379:6379"
-  webapp.example:
-    image: ${DOCKER_REGISTRY-}webappexample
+      - "6379:6379"   # RESP
+      - "9090:9090"   # Prometheus metrics
+    volumes:
+      - cinnabar-data:/data
+
+  sample-api:
+    image: ${DOCKER_REGISTRY-}cinnabar-sample-api
     build:
       context: .
-      dockerfile: src/WebApp.Example/Dockerfile
+      dockerfile: samples/Cinnabar.Samples.WebApi/Dockerfile
     ports:
       - "8080:8080"
-      - "8081:8081"
+    environment:
+      - Redis__Host=cinnabar
+    depends_on:
+      - cinnabar
+
+volumes:
+  cinnabar-data:

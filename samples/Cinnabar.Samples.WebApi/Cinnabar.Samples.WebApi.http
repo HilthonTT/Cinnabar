@@ -1,0 +1,34 @@
+@host = http://localhost:5057
+
+### Health check
+GET {{host}}/redis/ping
+
+### Set a value that expires in 60 seconds
+POST {{host}}/redis/set
+Content-Type: application/json
+
+{ "key": "greeting", "value": "hello", "expiryMs": 60000 }
+
+### Read it back
+GET {{host}}/redis/get/greeting
+
+### Push to a list
+POST {{host}}/redis/rpush
+Content-Type: application/json
+
+{ "key": "tasks", "values": ["build", "test", "deploy"] }
+
+### Read the list
+GET {{host}}/redis/lrange/tasks?start=0&end=-1
+
+### Append to a stream
+POST {{host}}/redis/xadd
+Content-Type: application/json
+
+{ "streamKey": "events", "fields": { "action": "click", "page": "/home" } }
+
+### Publish (open /redis/subscribe/news in another terminal with curl -N first)
+POST {{host}}/redis/publish
+Content-Type: application/json
+
+{ "channel": "news", "message": "hello subscribers" }

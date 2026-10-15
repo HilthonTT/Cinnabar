@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Cinnabar.Client\Cinnabar.Client.csproj" />
+  </ItemGroup>
+
+</Project>
