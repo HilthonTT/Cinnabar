@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # docker-compose.dcproj needs Visual Studio's container tooling and cannot be loaded by the CLI.
+      - name: Drop Visual Studio-only projects from the solution
+        shell: bash
+        run: dotnet sln Cinnabar.slnx remove docker-compose.dcproj
+
+      - name: Restore
+        run: dotnet restore Cinnabar.slnx
+
+      - name: Build
+        run: dotnet build Cinnabar.slnx -c Release --no-restore
+
+      - name: Test
+        run: >
+          dotnet test Cinnabar.slnx -c Release --no-build
+          --logger trx --results-directory TestResults
+          --collect "XPlat Code Coverage"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+          if-no-files-found: ignore
+
+  pack:
+    name: Pack NuGet packages
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack
+        run: |
+          VERSION="1.0.0-ci.${{ github.run_number }}"
+          dotnet pack src/Cinnabar.Protocol/Cinnabar.Protocol.csproj -c Release -o artifacts -p:Version=$VERSION
+          dotnet pack src/Cinnabar.Client/Cinnabar.Client.csproj -c Release -o artifacts -p:Version=$VERSION
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts/*.nupkg
+
+  docker:
+    name: Docker image
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cinnabar
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha
+
+      # Pull requests only check that the image builds; pushes to main publish it as :edge.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Cinnabar.Server/Dockerfile
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -11,8 +11,8 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.13" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.3.0" />
-    <!-- Pinned above the transitive 2.4.1, which is affected by GHSA-v5pm-xwqc-g5wc. -->
-    <PackageReference Include="Microsoft.OpenApi" Version="3.10.2" />
+    <!-- Pinned above the transitive 2.4.1 (GHSA-v5pm-xwqc-g5wc); stays on 2.x because Microsoft.AspNetCore.OpenApi 10 requires &lt; 3.0.0. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.12.2" />
   </ItemGroup>
 
   <ItemGroup>

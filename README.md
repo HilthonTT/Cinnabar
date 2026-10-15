@@ -9,6 +9,10 @@
   with a pooled async client library.
 </p>
 
+<p align="center">
+  <a href="https://github.com/HilthonTT/redis-clone/actions/workflows/ci.yml"><img src="https://github.com/HilthonTT/redis-clone/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
 ---
 
 Cinnabar speaks RESP2, the Redis wire protocol, so `redis-cli` and existing Redis client

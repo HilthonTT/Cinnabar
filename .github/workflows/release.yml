@@ -1,0 +1,96 @@
+name: Release
+
+# Push a tag such as v1.2.0 to publish that version.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  nuget:
+    name: Test, pack & publish NuGet packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Resolve version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      # docker-compose.dcproj needs Visual Studio's container tooling and cannot be loaded by the CLI.
+      - name: Drop Visual Studio-only projects from the solution
+        run: dotnet sln Cinnabar.slnx remove docker-compose.dcproj
+
+      - name: Build & test
+        run: |
+          dotnet build Cinnabar.slnx -c Release -p:Version=$VERSION
+          dotnet test Cinnabar.slnx -c Release --no-build
+
+      - name: Pack
+        run: |
+          dotnet pack src/Cinnabar.Protocol/Cinnabar.Protocol.csproj -c Release -o artifacts -p:Version=$VERSION
+          dotnet pack src/Cinnabar.Client/Cinnabar.Client.csproj -c Release -o artifacts -p:Version=$VERSION
+
+      # Skipped until a NUGET_API_KEY repository secret is configured.
+      - name: Publish to nuget.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        if: env.NUGET_API_KEY != ''
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE=""
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --title "$GITHUB_REF_NAME" --generate-notes $PRERELEASE
+
+  docker:
+    name: Publish Docker image
+    needs: nuget
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cinnabar
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/Cinnabar.Server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
