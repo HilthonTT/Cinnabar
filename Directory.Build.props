@@ -1,0 +1,14 @@
+<Project>
+  <!-- Settings shared by every project in the repository. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Authors>Hilthon</Authors>
+    <Product>Cinnabar</Product>
+    <Copyright>Copyright (c) 2026 Hilthon</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/HilthonTT/redis-clone</RepositoryUrl>
+  </PropertyGroup>
+</Project>

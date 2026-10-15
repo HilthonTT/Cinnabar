@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Cinnabar.Protocol</RootNamespace>
+    <Description>RESP2 (REdis Serialization Protocol) reader and encoder shared by the Cinnabar server and client.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+</Project>
