@@ -105,6 +105,16 @@ public sealed class HashCommandTests : DispatcherTestBase
         (await Run("HSET", "s", "f", "v")).Should().StartWith("-WRONGTYPE");
     }
 
+    [Fact]
+    public async Task Hscan_returns_fields_and_values()
+    {
+        await Run("HSET", "h", "a", "1", "b", "2");
+
+        string reply = await Run("HSCAN", "h", "0", "COUNT", "100");
+
+        reply.Should().StartWith("*2\r\n" + Bulk("0") + "*4\r\n");
+        reply.Should().Contain(Bulk("a") + Bulk("1")).And.Contain(Bulk("b") + Bulk("2"));
+    }
 
     [Fact]
     public async Task No_op_writes_are_not_propagated()

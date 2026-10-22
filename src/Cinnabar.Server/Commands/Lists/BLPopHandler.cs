@@ -1,4 +1,5 @@
 using Cinnabar.Server.Blocking;
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Server.Replication;
 using Cinnabar.Storage;
@@ -11,5 +12,6 @@ internal sealed class BLPopHandler(
     Keyspace keyspace,
     KeyNotifier notifier,
     ReplicationMaster master,
+    TransactionGate gate,
     ServerSettings settings)
-    : BlockingPopHandlerBase(keyspace, notifier, master, settings, ListEnd.Left);
+    : BlockingPopHandlerBase(keyspace, notifier, master, gate, settings, ListEnd.Left);

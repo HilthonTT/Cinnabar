@@ -1,4 +1,5 @@
 using Cinnabar.Server.Blocking;
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Networking;
 using Cinnabar.Storage;
 
@@ -9,9 +10,13 @@ namespace Cinnabar.Server.Commands.Streams;
 /// entries newer than each ID. <c>$</c> means "newer than the current last entry".
 /// With BLOCK, waits for new entries (0 waits forever); nil on timeout.
 /// </summary>
+/// <remarks>
+/// XREAD is flagged as blocking, so the dispatcher does not hold the transaction gate; each
+/// read takes it, and waiting happens outside it.
+/// </remarks>
 [Command("XREAD", MinArgs = 3, Flags = CommandFlags.Blocking, Group = "stream",
     Syntax = "[COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]")]
-internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier) : ICommandHandler
+internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier, TransactionGate gate) : ICommandHandler
 {
     public async ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)
     {
@@ -65,7 +70,7 @@ internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier) : IC
 
         if (!block || session.IsExecuting)
         {
-            return Read(keys, after, count) ?? Reply.NullArray;
+            return await ReadAsync(keys, after, count, session, cancellationToken) ?? Reply.NullArray;
         }
 
         using ClientSession.DisconnectWatch watch = session.WatchForDisconnect(cancellationToken);
@@ -78,7 +83,7 @@ internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier) : IC
         while (true)
         {
             using KeyNotifier.KeyWaiter waiter = notifier.Register(keys);
-            if (Read(keys, after, count) is { } reply)
+            if (await ReadAsync(keys, after, count, session, cancellationToken) is { } reply)
             {
                 return reply;
             }
@@ -95,8 +100,18 @@ internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier) : IC
     }
 
     /// <summary>Returns <c>[[key, entries], ...]</c> for streams with new entries, or null if there are none.</summary>
-    private Reply? Read(string[] keys, StreamId[] after, int? count)
+    private async ValueTask<Reply?> ReadAsync(
+        string[] keys,
+        StreamId[] after,
+        int? count,
+        ClientSession session,
+        CancellationToken cancellationToken)
     {
+        // Inside EXEC the transaction already holds the gate exclusively.
+        using SharedExclusiveGate.Releaser? transaction = session.IsExecuting
+            ? null
+            : await gate.EnterSharedAsync(cancellationToken);
+
         var streams = new List<Reply>();
         for (int i = 0; i < keys.Length; i++)
         {

@@ -1,10 +1,11 @@
 using Cinnabar.Server.Networking;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Commands.Transactions;
 
-/// <summary><c>DISCARD</c>: drops the queued commands.</summary>
+/// <summary><c>DISCARD</c>: drops the queued commands and ends every WATCH.</summary>
 [Command("DISCARD", MaxArgs = 0, Flags = CommandFlags.Transaction, Group = "transactions")]
-internal sealed class DiscardHandler : ICommandHandler
+internal sealed class DiscardHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)
     {
@@ -14,6 +15,7 @@ internal sealed class DiscardHandler : ICommandHandler
         }
 
         session.EndTransaction();
+        session.UnwatchAll(keyspace);
         return ValueTask.FromResult(Reply.Ok);
     }
 }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading.Channels;
 using Cinnabar.Server.Commands;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Networking;
 
@@ -99,6 +100,20 @@ internal sealed class ClientSession : IAsyncDisposable
         InTransaction = false;
         TransactionFailed = false;
         return commands;
+    }
+
+    /// <summary>Keys watched with WATCH, and the version each had at the time.</summary>
+    public Dictionary<string, long> WatchedKeys { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Ends every WATCH (after EXEC, DISCARD, UNWATCH, or on disconnect).</summary>
+    public void UnwatchAll(Keyspace keyspace)
+    {
+        foreach (string key in WatchedKeys.Keys)
+        {
+            keyspace.Unwatch(key);
+        }
+
+        WatchedKeys.Clear();
     }
 
     // ───────────────────────── Pub/Sub ─────────────────────────

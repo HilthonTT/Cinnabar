@@ -1,6 +1,7 @@
 using System.Reflection;
 using Cinnabar.Server.Blocking;
 using Cinnabar.Server.Commands;
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Server.Diagnostics;
 using Cinnabar.Server.Networking;
@@ -29,6 +30,7 @@ internal static class ServiceCollectionExtensions
 
         services.AddSingleton(sp => new Keyspace(sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<KeyNotifier>();
+        services.AddSingleton<TransactionGate>();
         services.AddSingleton<PubSubBroker>();
         services.AddSingleton<SnapshotService>();
 

@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Reflection;
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Server.Diagnostics;
 using Cinnabar.Server.Networking;
@@ -15,15 +16,17 @@ namespace Cinnabar.Server.Commands;
 /// </summary>
 /// <remarks>
 /// Checks, in order: command exists → authenticated → argument count → allowed in
-/// subscribed mode → queue if inside MULTI → replica is read-only. It then runs the handler,
-/// converts storage errors into replies, propagates successful writes to replicas, and
-/// records metrics.
+/// subscribed mode → queue if inside MULTI → replica is read-only. It then runs the handler
+/// while holding the <see cref="TransactionGate"/> in shared mode, converts storage errors
+/// into replies, propagates successful writes to replicas, and records metrics.
 /// </remarks>
 internal sealed class CommandDispatcher
 {
     private readonly FrozenDictionary<string, RegisteredCommand> _commands;
     private readonly ServerSettings _settings;
     private readonly ReplicationMaster _master;
+    private readonly Keyspace _keyspace;
+    private readonly TransactionGate _gate;
     private readonly ServerMetrics _metrics;
     private readonly ILogger<CommandDispatcher> _logger;
 
@@ -31,11 +34,15 @@ internal sealed class CommandDispatcher
         IEnumerable<ICommandHandler> handlers,
         ServerSettings settings,
         ReplicationMaster master,
+        Keyspace keyspace,
+        TransactionGate gate,
         ServerMetrics metrics,
         ILogger<CommandDispatcher> logger)
     {
         _settings = settings;
         _master = master;
+        _keyspace = keyspace;
+        _gate = gate;
         _metrics = metrics;
         _logger = logger;
 
@@ -98,12 +105,14 @@ internal sealed class CommandDispatcher
     }
 
     /// <summary>
-    /// Runs the commands queued since MULTI, back to back, and returns their replies as one array.
+    /// Runs the commands queued since MULTI and returns their replies as one array.
     /// </summary>
     /// <remarks>
-    /// Commands from other clients may run between the queued commands; there is no global lock.
-    /// If any command was rejected while queueing (unknown name, bad arity), nothing runs and
-    /// <c>EXECABORT</c> is returned, as in Redis.
+    /// The transaction holds the <see cref="TransactionGate"/> exclusively, so no other
+    /// client's command runs until it finishes. If a key watched with WATCH changed since, the
+    /// transaction is not run and the reply is the null array. If any command was rejected
+    /// while queueing (unknown name, bad arity), nothing runs and <c>EXECABORT</c> is
+    /// returned. Either way the connection's watches end, as in Redis.
     /// </remarks>
     public async ValueTask<Reply> ExecuteTransactionAsync(ClientSession session, CancellationToken cancellationToken)
     {
@@ -112,26 +121,37 @@ internal sealed class CommandDispatcher
 
         if (failed)
         {
+            session.UnwatchAll(_keyspace);
             return Reply.Error("EXECABORT Transaction discarded because of previous errors.");
         }
 
-        var replies = new List<Reply>(queued.Count);
-        session.IsExecuting = true;
-        try
+        using (await _gate.EnterExclusiveAsync(cancellationToken))
         {
-            foreach (Command command in queued)
+            bool watchedKeyChanged = session.WatchedKeys.Any(watch => !_keyspace.IsUnchanged(watch.Key, watch.Value));
+            session.UnwatchAll(_keyspace);
+            if (watchedKeyChanged)
             {
-                // DispatchAsync re-checks the read-only rule; the command can't be re-queued
-                // because the transaction has already ended.
-                replies.Add(await DispatchAsync(command, session, cancellationToken));
+                return Reply.NullArray;
             }
-        }
-        finally
-        {
-            session.IsExecuting = false;
-        }
 
-        return Reply.Array(replies);
+            var replies = new List<Reply>(queued.Count);
+            session.IsExecuting = true;
+            try
+            {
+                foreach (Command command in queued)
+                {
+                    // DispatchAsync re-checks the read-only rule; the command can't be re-queued
+                    // because the transaction has already ended.
+                    replies.Add(await DispatchAsync(command, session, cancellationToken));
+                }
+            }
+            finally
+            {
+                session.IsExecuting = false;
+            }
+
+            return Reply.Array(replies);
+        }
     }
 
     private async ValueTask<Reply> ExecuteAsync(
@@ -148,14 +168,24 @@ internal sealed class CommandDispatcher
         long started = Stopwatch.GetTimestamp();
         Reply reply;
 
+        // Inside EXEC the transaction already holds the gate exclusively. Blocking commands
+        // take it themselves, only while they look at data. MULTI/EXEC/DISCARD/WATCH manage
+        // transactions rather than data, and EXEC must not hold it in shared mode.
+        bool ungated = session.IsExecuting ||
+                       (spec.Flags & (CommandFlags.Blocking | CommandFlags.Transaction | CommandFlags.NoGate)) != 0;
+        SharedExclusiveGate.Releaser? gate = ungated ? null : await _gate.EnterSharedAsync(cancellationToken);
+
         // Writes hold the barrier until they are propagated, so a replica snapshot never
         // sees a write without also seeing (or never seeing) its propagation.
-        WriteBarrier.Releaser? barrier = propagates
-            ? await _master.Barrier.EnterSharedAsync(cancellationToken)
-            : null;
+        WriteBarrier.Releaser? barrier = null;
 
         try
         {
+            if (propagates)
+            {
+                barrier = await _master.Barrier.EnterSharedAsync(cancellationToken);
+            }
+
             reply = await InvokeAsync(registered.Handler, command, session, cancellationToken);
 
             if (propagates && !reply.IsError && !reply.SkipPropagation)
@@ -166,6 +196,7 @@ internal sealed class CommandDispatcher
         finally
         {
             barrier?.Dispose();
+            gate?.Dispose();
         }
 
         _metrics.RecordCommand(spec.Name, Stopwatch.GetElapsedTime(started), !reply.IsError);

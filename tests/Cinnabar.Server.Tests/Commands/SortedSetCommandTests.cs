@@ -159,6 +159,13 @@ public sealed class SortedSetCommandTests : DispatcherTestBase
         (await Run("EXISTS", "z")).Should().Be(":0\r\n");
     }
 
+    [Fact]
+    public async Task Zscan_returns_members_and_scores()
+    {
+        await Run("ZADD", "z", "1.5", "a");
+
+        (await Run("ZSCAN", "z", "0")).Should().Be("*2\r\n" + Bulk("0") + BulkArray("a", "1.5"));
+    }
 
     [Fact]
     public async Task Sorted_set_commands_on_a_hash_are_wrongtype()

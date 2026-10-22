@@ -9,7 +9,12 @@ namespace Cinnabar.Server.Commands.Replication;
 /// backlog is not implemented). The snapshot and command stream are written directly to the
 /// connection, so the dispatcher sends nothing.
 /// </summary>
-[Command("PSYNC", MinArgs = 2, MaxArgs = 2, Group = "replication", Syntax = "replicationid offset")]
+/// <remarks>
+/// Sending the snapshot can take a while, so PSYNC does not hold the transaction gate; a
+/// snapshot taken mid-EXEC is completed by the transaction's remaining writes, which follow
+/// in the command stream.
+/// </remarks>
+[Command("PSYNC", MinArgs = 2, MaxArgs = 2, Flags = CommandFlags.NoGate, Group = "replication", Syntax = "replicationid offset")]
 internal sealed class PSyncHandler(ReplicationMaster master, ServerSettings settings) : ICommandHandler
 {
     public async ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)

@@ -4,7 +4,7 @@ using Cinnabar.Protocol;
 
 namespace Cinnabar.IntegrationTests;
 
-/// <summary>Hashes, sets, sorted sets and binary payloads through the client library and raw sockets.</summary>
+/// <summary>Hashes, sets, sorted sets, multi-key strings and SCAN through the client library.</summary>
 public sealed class DataTypeTests : IAsyncLifetime
 {
     private TestServer _server = null!;
@@ -84,7 +84,42 @@ public sealed class DataTypeTests : IAsyncLifetime
             new RedisSortedSetEntry("top", double.PositiveInfinity));
     }
 
+    [Fact]
+    public async Task MSetAndMGet()
+    {
+        await Client.MSetAsync([new("a", "1"), new("b", "2")]);
 
+        (await Client.MGetAsync("a", "missing", "b")).Should().Equal("1", null, "2");
+        (await Client.MSetIfNotExistsAsync([new("a", "x"), new("c", "3")])).Should().BeFalse();
+        (await Client.StrLenAsync("a")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Scan_VisitsEveryKeyOnce()
+    {
+        for (int i = 0; i < 300; i++)
+        {
+            await Client.SetAsync($"scan:{i}", "v");
+        }
+
+        await Client.HSetAsync("scan:hash", "f", "v");
+
+        var keys = new List<string>();
+        await foreach (string key in Client.ScanAsync("scan:*", pageSize: 25))
+        {
+            keys.Add(key);
+        }
+
+        keys.Should().HaveCount(301).And.OnlyHaveUniqueItems();
+
+        var hashes = new List<string>();
+        await foreach (string key in Client.ScanAsync(type: "hash"))
+        {
+            hashes.Add(key);
+        }
+
+        hashes.Should().Equal("scan:hash");
+    }
 
     [Fact]
     public async Task BinaryValues_RoundTripByteForByte()
@@ -108,6 +143,10 @@ public sealed class DataTypeTests : IAsyncLifetime
         await connection.WriteAsync(get);
         byte[] expected = RespEncoder.BulkString(value);
         (await connection.ReadBytesAsync(expected.Length)).Should().Equal(expected);
+
+        byte[] strlen = [.. "*2\r\n$6\r\nSTRLEN\r\n"u8.ToArray(), .. Encoding.ASCII.GetBytes($"${key.Length}\r\n"), .. key, .. "\r\n"u8.ToArray()];
+        await connection.WriteAsync(strlen);
+        (await connection.ReadAsync()).AsLong().Should().Be(value.Length);
     }
 
     [Fact]

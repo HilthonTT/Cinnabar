@@ -23,7 +23,8 @@ namespace Cinnabar.Storage;
 /// Keys and values are byte strings (see <see cref="ByteString"/>): one char per byte.
 /// </para>
 /// <para>
-/// Every change to a key gives it a new version (see <see cref="Touch(Entry)"/>).
+/// Every change to a key gives it a new version, which <c>WATCH</c> uses to detect
+/// modification; see <see cref="Watch"/>.
 /// </para>
 /// <para>
 /// Expired keys are removed lazily on access and by a periodic sweep.
@@ -36,6 +37,10 @@ public sealed partial class Keyspace : IDisposable
 
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
 
+    // WATCH support: how many sessions watch each key, and the version a watched key had
+    // when it was last removed (so deleting a watched key counts as a change).
+    private readonly ConcurrentDictionary<string, int> _watchCounts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _tombstones = new(StringComparer.Ordinal);
     private long _version;
     private readonly object[] _stripes;
     private readonly TimeProvider _time;
@@ -123,7 +128,16 @@ public sealed partial class Keyspace : IDisposable
     }
 
     /// <summary>Removes every key.</summary>
-    public void Clear() => _entries.Clear();
+    public void Clear()
+    {
+        foreach (string key in _entries.Keys)
+        {
+            lock (StripeFor(key))
+            {
+                Remove(key);
+            }
+        }
+    }
 
     /// <summary>
     /// Sets a time to live. A zero or negative TTL deletes the key, as in Redis.
@@ -308,6 +322,54 @@ public sealed partial class Keyspace : IDisposable
 
             return result;
         }
+    }
+
+    /// <summary>Length of the string at <paramref name="key"/> in bytes, or 0 if missing.</summary>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
+    public long StringLength(string key)
+    {
+        lock (StripeFor(key))
+        {
+            return GetLive<string>(key)?.Length ?? 0;
+        }
+    }
+
+    /// <summary>
+    /// Reads several strings atomically (<c>MGET</c>). Missing keys and keys of other types
+    /// yield <see langword="null"/>.
+    /// </summary>
+    public IReadOnlyList<string?> GetStrings(IReadOnlyList<string> keys)
+    {
+        using StripeSet locks = LockKeys(keys);
+        var values = new string?[keys.Count];
+        for (int i = 0; i < keys.Count; i++)
+        {
+            values[i] = GetLive(keys[i])?.Value as string;
+        }
+
+        return values;
+    }
+
+    /// <summary>
+    /// Stores several strings atomically, replacing values of any type and clearing their TTLs
+    /// (<c>MSET</c>). With <paramref name="onlyIfNoneExist"/> (<c>MSETNX</c>), nothing is written
+    /// if any of the keys exists.
+    /// </summary>
+    /// <returns><see langword="false"/> if <paramref name="onlyIfNoneExist"/> prevented the write.</returns>
+    public bool SetStrings(IReadOnlyList<KeyValuePair<string, string>> pairs, bool onlyIfNoneExist = false)
+    {
+        using StripeSet locks = LockKeys(pairs.Select(p => p.Key));
+        if (onlyIfNoneExist && pairs.Any(p => GetLive(p.Key) is not null))
+        {
+            return false;
+        }
+
+        foreach ((string key, string value) in pairs)
+        {
+            Store(key, value, NoExpiry);
+        }
+
+        return true;
     }
 
     // ───────────────────────────── Lists ─────────────────────────────
@@ -669,8 +731,24 @@ public sealed partial class Keyspace : IDisposable
         }
     }
 
-    /// <summary>Removes a key. Caller must hold the key's stripe.</summary>
-    private bool Remove(string key) => _entries.TryRemove(key, out _);
+    /// <summary>
+    /// Removes a key, leaving a tombstone version if someone watches it. Caller must hold the
+    /// key's stripe.
+    /// </summary>
+    private bool Remove(string key)
+    {
+        if (!_entries.TryRemove(key, out _))
+        {
+            return false;
+        }
+
+        if (_watchCounts.ContainsKey(key))
+        {
+            _tombstones[key] = NextVersion();
+        }
+
+        return true;
+    }
 
     private static Dictionary<string, string> NewHash(IEnumerable<KeyValuePair<string, string>> fields)
     {
@@ -721,7 +799,7 @@ public sealed partial class Keyspace : IDisposable
         /// <summary>Unix time in milliseconds, or <see cref="NoExpiry"/>.</summary>
         public long ExpiresAtMs { get; set; } = expiresAtMs;
 
-        /// <summary>Changes whenever the key is modified.</summary>
+        /// <summary>Changes whenever the key is modified; see <see cref="Watch"/>.</summary>
         public long Version { get; set; } = version;
 
         public bool IsExpired(long nowMs) => ExpiresAtMs != NoExpiry && ExpiresAtMs <= nowMs;

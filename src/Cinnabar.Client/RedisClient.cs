@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Cinnabar.Client.Internal;
 using Cinnabar.Client.PubSub;
 using Cinnabar.Protocol;
@@ -109,6 +110,44 @@ public sealed partial class RedisClient : IAsyncDisposable
     public async Task<List<string?>> KeysAsync(string pattern = "*", CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["KEYS", pattern], cancellationToken).ConfigureAwait(false)).AsStringList();
 
+    /// <summary>
+    /// Iterates keys with <c>SCAN</c>, a page at a time, without blocking the server the way
+    /// <c>KEYS</c> does. Keys that exist for the whole iteration are returned exactly once.
+    /// </summary>
+    /// <param name="pattern">Only keys matching this glob (<c>MATCH</c>).</param>
+    /// <param name="type">Only keys of this type, such as <c>hash</c> (<c>TYPE</c>).</param>
+    /// <param name="pageSize">How many keys the server examines per call (<c>COUNT</c>).</param>
+    /// <param name="cancellationToken">Stops the iteration.</param>
+    public async IAsyncEnumerable<string> ScanAsync(
+        string? pattern = null,
+        string? type = null,
+        int pageSize = 100,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        string cursor = "0";
+        do
+        {
+            List<string> command = ["SCAN", cursor, "COUNT", Format(pageSize)];
+            if (pattern is not null)
+            {
+                command.AddRange(["MATCH", pattern]);
+            }
+
+            if (type is not null)
+            {
+                command.AddRange(["TYPE", type]);
+            }
+
+            IReadOnlyList<RespValue> page = (await ExecuteAsync([.. command], cancellationToken).ConfigureAwait(false)).AsArray();
+            cursor = page[0].AsString() ?? "0";
+            foreach (RespValue key in page[1].AsArray())
+            {
+                yield return key.AsString()!;
+            }
+        }
+        while (cursor != "0");
+    }
+
     // ─────────────────────────── Strings ───────────────────────────
 
     /// <summary><c>GET key</c>: the value, or <see langword="null"/> if the key does not exist.</summary>
@@ -134,6 +173,25 @@ public sealed partial class RedisClient : IAsyncDisposable
             : ["SET", key, value, "NX"];
         return !(await ExecuteAsync(command, cancellationToken).ConfigureAwait(false)).IsNull;
     }
+
+    /// <summary><c>MGET key [key ...]</c>: the values, read atomically; <see langword="null"/> for missing keys.</summary>
+    public async Task<List<string?>> MGetAsync(params string[] keys) =>
+        (await ExecuteAsync(["MGET", .. keys], CancellationToken.None).ConfigureAwait(false)).AsStringList();
+
+    /// <summary><c>MSET key value [key value ...]</c>: sets several strings atomically.</summary>
+    public Task MSetAsync(IEnumerable<KeyValuePair<string, string>> values, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(["MSET", .. Flatten(values)], cancellationToken);
+
+    /// <summary>
+    /// <c>MSETNX key value [key value ...]</c>: sets the strings only if none of the keys exists.
+    /// Returns <see langword="true"/> if they were set.
+    /// </summary>
+    public async Task<bool> MSetIfNotExistsAsync(IEnumerable<KeyValuePair<string, string>> values, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["MSETNX", .. Flatten(values)], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
+
+    /// <summary><c>STRLEN key</c>: the length of the value in bytes.</summary>
+    public async Task<long> StrLenAsync(string key, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["STRLEN", key], cancellationToken).ConfigureAwait(false)).AsLong();
 
     /// <summary><c>INCR key</c>: the new value.</summary>
     public async Task<long> IncrementAsync(string key, CancellationToken cancellationToken = default) =>
@@ -310,6 +368,76 @@ public sealed partial class RedisClient : IAsyncDisposable
         }
 
         return exec.AsArray();
+    }
+
+    /// <summary>
+    /// Runs an optimistic transaction: <c>WATCH</c>es <paramref name="watch"/>, lets
+    /// <paramref name="prepare"/> read current values and decide what to write, then runs
+    /// those commands in <c>MULTI</c> … <c>EXEC</c>, all on one connection.
+    /// </summary>
+    /// <param name="watch">Keys whose modification by anyone should cancel the transaction.</param>
+    /// <param name="prepare">
+    /// Receives a function that runs a command on the transaction's connection (use it for
+    /// reads), and returns the commands to queue.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the operation.</param>
+    /// <returns>
+    /// Each queued command's reply, or <see langword="null"/> if a watched key changed before
+    /// EXEC and nothing was written; retry in that case.
+    /// </returns>
+    /// <example>
+    /// <code>
+    /// IReadOnlyList&lt;RespValue&gt;? result;
+    /// do
+    /// {
+    ///     result = await client.ExecuteTransactionAsync(["balance"], async read =>
+    ///     {
+    ///         long balance = long.Parse((await read(["GET", "balance"])).AsString() ?? "0");
+    ///         return [["SET", "balance", (balance - 10).ToString()]];
+    ///     });
+    /// }
+    /// while (result is null);
+    /// </code>
+    /// </example>
+    /// <exception cref="RedisException">The server rejected the transaction (for example EXECABORT).</exception>
+    public async Task<IReadOnlyList<RespValue>?> ExecuteTransactionAsync(
+        IReadOnlyCollection<string> watch,
+        Func<Func<string[], Task<RespValue>>, Task<IReadOnlyList<string[]>>> prepare,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(prepare);
+        if (watch.Count == 0)
+        {
+            throw new ArgumentException("Watch at least one key.", nameof(watch));
+        }
+
+        await using ConnectionPool.Lease lease = await _pool.RentAsync(cancellationToken).ConfigureAwait(false);
+        RedisConnection connection = lease.Connection;
+        (await connection.ExecuteAsync(["WATCH", .. watch], cancellationToken).ConfigureAwait(false)).ThrowIfError();
+
+        IReadOnlyList<string[]> commands;
+        try
+        {
+            commands = await prepare(async command =>
+                (await connection.ExecuteAsync(command, cancellationToken).ConfigureAwait(false)).ThrowIfError()).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Don't hand a connection with live watches back to the pool.
+            if (connection.IsHealthy)
+            {
+                await connection.ExecuteAsync(["UNWATCH"], CancellationToken.None).ConfigureAwait(false);
+            }
+
+            throw;
+        }
+
+        List<IReadOnlyList<string>> batch = [["MULTI"], .. commands, ["EXEC"]];
+        IReadOnlyList<RespValue> replies = await connection.ExecuteManyAsync(batch, cancellationToken).ConfigureAwait(false);
+
+        RespValue exec = replies[^1].ThrowIfError();
+        return exec.IsNull ? null : exec.AsArray();
     }
 
     // ─────────────────────────── Raw ───────────────────────────

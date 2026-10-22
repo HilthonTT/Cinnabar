@@ -83,6 +83,12 @@ internal static class Arguments
     public static LexBound ParseLexBound(string text) =>
         LexBound.TryParse(text, out LexBound bound) ? bound : throw new StorageException("ERR min or max not valid string range item");
 
+    /// <summary>Parses a SCAN cursor (an unsigned 64-bit integer).</summary>
+    public static ulong ParseCursor(string text) =>
+        ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out ulong cursor)
+            ? cursor
+            : throw new StorageException("ERR invalid cursor");
+
     /// <summary>
     /// Reads <c>name value</c> pairs from <paramref name="start"/> to the end of the arguments.
     /// The caller has checked that the count is even.

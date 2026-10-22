@@ -123,6 +123,15 @@ public sealed class SetCommandTests : DispatcherTestBase
         (await Run(["SINTERCARD", .. args])).Should().Be(expected);
     }
 
+    [Fact]
+    public async Task Sscan_matches_members()
+    {
+        await Run("SADD", "s", "apple", "avocado", "banana");
+
+        string reply = await Run("SSCAN", "s", "0", "MATCH", "a*", "COUNT", "100");
+
+        reply.Should().StartWith("*2\r\n" + Bulk("0") + "*2\r\n").And.Contain(Bulk("apple")).And.Contain(Bulk("avocado"));
+    }
 
     [Fact]
     public async Task Set_commands_on_a_list_are_wrongtype()

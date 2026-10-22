@@ -24,8 +24,17 @@ internal enum CommandFlags
     /// <summary>Allowed before AUTH.</summary>
     NoAuth = 1 << 3,
 
-    /// <summary>Runs immediately inside MULTI instead of being queued (MULTI, EXEC, DISCARD).</summary>
+    /// <summary>
+    /// Runs immediately inside MULTI instead of being queued (MULTI, EXEC, DISCARD, WATCH).
+    /// Also runs without the transaction gate: these manage transactions rather than data.
+    /// </summary>
     Transaction = 1 << 4,
+
+    /// <summary>
+    /// Runs without holding the transaction gate, because it can take a long time and does not
+    /// need to be isolated from EXEC (PSYNC streams a whole snapshot to a replica).
+    /// </summary>
+    NoGate = 1 << 5,
 }
 
 /// <summary>

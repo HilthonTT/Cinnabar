@@ -1,3 +1,4 @@
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Storage;
 using Cinnabar.Storage.Persistence;
@@ -8,13 +9,23 @@ namespace Cinnabar.Server.Persistence;
 /// <summary>
 /// Loads the RDB snapshot at startup and writes it on SAVE/BGSAVE, on a timer, and at shutdown.
 /// </summary>
+/// <remarks>
+/// The keys are copied while holding the <see cref="TransactionGate"/>, so a snapshot never
+/// contains half of a MULTI/EXEC transaction. The copy is taken before waiting for the file
+/// lock (waiting for the lock while holding the gate could deadlock with EXEC), and a copy
+/// that is older than the last file written is not written.
+/// </remarks>
 internal sealed class SnapshotService(
     ServerSettings settings,
     Keyspace keyspace,
+    TransactionGate gate,
     TimeProvider timeProvider,
     ILogger<SnapshotService> logger) : IAsyncDisposable
 {
     private readonly SemaphoreSlim _saveLock = new(1, 1);
+    private long _snapshotSequence;
+    private long _writtenSequence;
+    private RdbWriteResult _lastResult = new(0, 0);
     private readonly CancellationTokenSource _stop = new();
     private int _disposeState;
     private Task? _periodicSaves;
@@ -63,14 +74,41 @@ internal sealed class SnapshotService(
         }
     }
 
-    /// <summary>Writes the snapshot now (SAVE).</summary>
-    public async Task<RdbWriteResult> SaveAsync(CancellationToken cancellationToken = default)
+    /// <summary>Writes the snapshot now (SAVE, shutdown).</summary>
+    /// <param name="cancellationToken">Cancels the save.</param>
+    /// <param name="callerHoldsGate">
+    /// The caller already holds the <see cref="TransactionGate"/> (the SAVE command does), so
+    /// the keys are copied without entering it again.
+    /// </param>
+    public async Task<RdbWriteResult> SaveAsync(CancellationToken cancellationToken = default, bool callerHoldsGate = false)
     {
+        IReadOnlyList<KeySnapshot> keys;
+        long sequence;
+        if (callerHoldsGate)
+        {
+            (keys, sequence) = CopyKeys();
+        }
+        else
+        {
+            using (await gate.EnterSharedAsync(cancellationToken))
+            {
+                (keys, sequence) = CopyKeys();
+            }
+        }
+
         await _saveLock.WaitAsync(cancellationToken);
         try
         {
+            if (sequence < _writtenSequence)
+            {
+                // A newer copy is already on disk; it includes everything this one has.
+                return _lastResult;
+            }
+
             string path = settings.Persistence.FilePath;
-            RdbWriteResult result = await RdbWriter.WriteFileAsync(path, keyspace.Snapshot(), cancellationToken);
+            RdbWriteResult result = await RdbWriter.WriteFileAsync(path, keys, cancellationToken);
+            _writtenSequence = sequence;
+            _lastResult = result;
             LastSave = timeProvider.GetUtcNow();
 
             logger.LogInformation("Saved {Count} key(s) to {Path}.", result.WrittenKeys, path);
@@ -86,6 +124,9 @@ internal sealed class SnapshotService(
             _saveLock.Release();
         }
     }
+
+    private (IReadOnlyList<KeySnapshot> Keys, long Sequence) CopyKeys() =>
+        (keyspace.Snapshot(), Interlocked.Increment(ref _snapshotSequence));
 
     /// <summary>Starts a save in the background (BGSAVE).</summary>
     /// <returns><see langword="false"/> if one is already running.</returns>

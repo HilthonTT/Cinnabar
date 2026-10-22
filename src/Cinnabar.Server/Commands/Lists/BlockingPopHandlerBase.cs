@@ -1,4 +1,5 @@
 using Cinnabar.Server.Blocking;
+using Cinnabar.Server.Concurrency;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Server.Networking;
 using Cinnabar.Server.Replication;
@@ -12,13 +13,14 @@ namespace Cinnabar.Server.Commands.Lists;
 /// </summary>
 /// <remarks>
 /// Inside EXEC the command never blocks, as in Redis. Because blocking writes cannot hold
-/// the replication barrier while waiting, the pop is propagated here (as LPOP/RPOP) rather
-/// than by the dispatcher.
+/// the transaction gate or the replication barrier while waiting, each pop attempt takes
+/// them itself, and the pop is propagated here (as LPOP/RPOP) rather than by the dispatcher.
 /// </remarks>
 internal abstract class BlockingPopHandlerBase(
     Keyspace keyspace,
     KeyNotifier notifier,
     ReplicationMaster master,
+    TransactionGate gate,
     ServerSettings settings,
     ListEnd end) : ICommandHandler
 {
@@ -64,6 +66,12 @@ internal abstract class BlockingPopHandlerBase(
     private async ValueTask<Reply?> TryPopAsync(string[] keys, ClientSession session, CancellationToken cancellationToken)
     {
         bool propagate = !settings.Replication.IsReplica;
+
+        // Inside EXEC the transaction already holds the gate exclusively.
+        using SharedExclusiveGate.Releaser? transaction = session.IsExecuting
+            ? null
+            : await gate.EnterSharedAsync(cancellationToken);
+
         WriteBarrier.Releaser? releaser = propagate
             ? await master.Barrier.EnterSharedAsync(cancellationToken)
             : null;

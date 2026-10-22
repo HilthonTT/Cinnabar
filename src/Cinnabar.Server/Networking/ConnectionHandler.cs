@@ -4,6 +4,7 @@ using Cinnabar.Protocol;
 using Cinnabar.Server.Commands;
 using Cinnabar.Server.Diagnostics;
 using Cinnabar.Server.Security;
+using Cinnabar.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace Cinnabar.Server.Networking;
@@ -14,6 +15,7 @@ namespace Cinnabar.Server.Networking;
 /// </summary>
 internal sealed class ConnectionHandler(
     CommandDispatcher dispatcher,
+    Keyspace keyspace,
     IpGuard ipGuard,
     ServerMetrics metrics,
     ILogger<ConnectionHandler> logger)
@@ -89,6 +91,7 @@ internal sealed class ConnectionHandler(
         }
         finally
         {
+            session.UnwatchAll(keyspace);
             await reader.CompleteAsync();
         }
     }

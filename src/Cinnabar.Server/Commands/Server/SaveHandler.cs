@@ -9,7 +9,8 @@ internal sealed class SaveHandler(SnapshotService snapshots) : ICommandHandler
 {
     public async ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)
     {
-        await snapshots.SaveAsync(cancellationToken);
+        // The dispatcher (or EXEC) already holds the transaction gate for this command.
+        await snapshots.SaveAsync(cancellationToken, callerHoldsGate: true);
         return Reply.Ok;
     }
 }
