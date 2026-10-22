@@ -59,6 +59,28 @@ public sealed class PersistenceTests : IDisposable
     }
 
     [Fact]
+    public async Task Restart_RestoresHashesSetsAndSortedSets()
+    {
+        await using (TestServer first = await StartAsync())
+        {
+            await first.Client.HSetAsync("hash", [new("name", "Zoë"), new("n", "1")]);
+            await first.Client.SAddAsync("set", "a", "b");
+            await first.Client.ZAddAsync("zset", [new("x", 1.25), new("y", double.NegativeInfinity)]);
+            await first.Client.ExecuteAsync("EXPIRE", "set", "3600");
+        }
+
+        await using TestServer second = await StartAsync();
+        RedisClient client = second.Client;
+
+        (await client.HGetAllAsync("hash")).Should().BeEquivalentTo(new Dictionary<string, string> { ["name"] = "Zoë", ["n"] = "1" });
+        (await client.SMembersAsync("set")).Should().BeEquivalentTo(["a", "b"]);
+        (await client.TimeToLiveAsync("set")).Should().BeGreaterThan(TimeSpan.FromMinutes(59));
+        (await client.ZRangeAsync("zset")).Should().Equal(
+            new RedisSortedSetEntry("y", double.NegativeInfinity),
+            new RedisSortedSetEntry("x", 1.25));
+    }
+
+    [Fact]
     public async Task Restart_ExpiredKeysAreNotRestored()
     {
         await using (TestServer first = await StartAsync())

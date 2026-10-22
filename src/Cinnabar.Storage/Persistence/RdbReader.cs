@@ -8,10 +8,11 @@ namespace Cinnabar.Storage.Persistence;
 /// Reads Redis RDB snapshot files.
 /// </summary>
 /// <remarks>
-/// Supported: string values (raw, integer-encoded and LZF-compressed), plain lists
-/// (type 1, as written by <see cref="RdbWriter"/>), second and millisecond expiry, auxiliary
-/// fields, resize hints, and LRU/LFU hints. Other value types (hashes, sets, sorted sets,
-/// and the compact list/stream encodings real Redis writes) raise <see cref="NotSupportedException"/>.
+/// Supported: string values (raw, integer-encoded and LZF-compressed), the plain encodings
+/// of lists, sets, sorted sets (types 3 and 5) and hashes, as written by <see cref="RdbWriter"/>,
+/// second and millisecond expiry, auxiliary fields, resize hints, and LRU/LFU hints. The
+/// compact encodings real Redis writes for small collections (listpacks, intsets, quicklists)
+/// and streams raise <see cref="NotSupportedException"/>.
 /// </remarks>
 public static class RdbReader
 {
@@ -25,8 +26,6 @@ public static class RdbReader
     private const byte OpSelectDb = 0xFE;
     private const byte OpEof = 0xFF;
 
-    private const byte TypeString = 0;
-    private const byte TypeList = 1;
 
     /// <summary>Reads and validates an RDB file.</summary>
     /// <exception cref="InvalidDataException">The file is corrupt or fails its checksum.</exception>
@@ -130,13 +129,13 @@ public static class RdbReader
     {
         switch (type)
         {
-            case TypeString:
+            case RdbTypes.String:
             {
                 string key = reader.ReadString();
                 return new KeySnapshot(key, KeyType.String, reader.ReadString(), expiresAt);
             }
 
-            case TypeList:
+            case RdbTypes.List or RdbTypes.Set:
             {
                 string key = reader.ReadString();
                 long count = reader.ReadLength();
@@ -146,12 +145,48 @@ public static class RdbReader
                     items.Add(reader.ReadString());
                 }
 
-                return new KeySnapshot(key, KeyType.List, items, expiresAt);
+                return new KeySnapshot(key, type == RdbTypes.List ? KeyType.List : KeyType.Set, items, expiresAt);
+            }
+
+            case RdbTypes.Hash:
+            {
+                string key = reader.ReadString();
+                long count = reader.ReadLength();
+                var fields = new List<KeyValuePair<string, string>>((int)Math.Min(count, 1024));
+                for (long i = 0; i < count; i++)
+                {
+                    string field = reader.ReadString();
+                    fields.Add(new KeyValuePair<string, string>(field, reader.ReadString()));
+                }
+
+                return new KeySnapshot(key, KeyType.Hash, fields, expiresAt);
+            }
+
+            case RdbTypes.SortedSet or RdbTypes.SortedSet2:
+            {
+                string key = reader.ReadString();
+                long count = reader.ReadLength();
+                var members = new List<ScoredMember>((int)Math.Min(count, 1024));
+                for (long i = 0; i < count; i++)
+                {
+                    string member = reader.ReadString();
+                    double score = type == RdbTypes.SortedSet2
+                        ? BinaryPrimitives.ReadDoubleLittleEndian(reader.ReadBytes(8))
+                        : reader.ReadTextScore();
+                    if (double.IsNaN(score))
+                    {
+                        throw new InvalidDataException($"Sorted set '{key}' has a NaN score.");
+                    }
+
+                    members.Add(new ScoredMember(member, score));
+                }
+
+                return new KeySnapshot(key, KeyType.SortedSet, members, expiresAt);
             }
 
             default:
                 throw new NotSupportedException(
-                    $"RDB value type {type} is not supported (Cinnabar loads strings and plain lists).");
+                    $"RDB value type {type} is not supported (Cinnabar loads strings and the plain list, set, sorted set and hash encodings).");
         }
     }
 
@@ -208,6 +243,22 @@ public static class RdbReader
         public long ReadInt64LittleEndian() => BinaryPrimitives.ReadInt64LittleEndian(ReadBytes(8));
 
         public int ReadInt32LittleEndian() => BinaryPrimitives.ReadInt32LittleEndian(ReadBytes(4));
+
+        /// <summary>
+        /// Reads a score in the old sorted-set encoding (type 3): a length byte, where 253, 254
+        /// and 255 stand for NaN, +inf and -inf, followed by the number as text.
+        /// </summary>
+        public double ReadTextScore()
+        {
+            byte length = ReadByte();
+            return length switch
+            {
+                253 => double.NaN,
+                254 => double.PositiveInfinity,
+                255 => double.NegativeInfinity,
+                _ => double.Parse(ReadBytes(length), NumberStyles.Float, CultureInfo.InvariantCulture),
+            };
+        }
 
         public long ReadLength()
         {

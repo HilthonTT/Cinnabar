@@ -6,7 +6,8 @@ namespace Cinnabar.Storage.Persistence;
 
 /// <summary>
 /// Writes keys to an RDB snapshot (format version 9) that <see cref="RdbReader"/> and
-/// Redis itself can load. Strings are written as type 0 and lists as plain lists (type 1).
+/// Redis itself can load. Strings are written as type 0, and lists, sets, sorted sets and
+/// hashes in their plain encodings: types 1, 2, 5 (scores as binary doubles) and 4.
 /// </summary>
 /// <remarks>
 /// Streams are not written: the Redis stream encoding is out of scope. They are counted in
@@ -56,7 +57,7 @@ public static class RdbWriter
 
         foreach (KeySnapshot key in keys)
         {
-            if (key.Type is not (KeyType.String or KeyType.List))
+            if (key.Type is KeyType.Stream or KeyType.None)
             {
                 skipped++;
                 continue;
@@ -70,21 +71,58 @@ public static class RdbWriter
                 writer.Advance(8);
             }
 
-            if (key.Type == KeyType.String)
+            switch (key.Type)
             {
-                WriteByte(writer, 0x00);
-                WriteString(writer, key.Key);
-                WriteString(writer, (string)key.Value);
-            }
-            else
-            {
-                var items = (IReadOnlyCollection<string>)key.Value;
-                WriteByte(writer, 0x01);
-                WriteString(writer, key.Key);
-                WriteLength(writer, items.Count);
-                foreach (string item in items)
+                case KeyType.String:
+                    WriteByte(writer, RdbTypes.String);
+                    WriteString(writer, key.Key);
+                    WriteString(writer, (string)key.Value);
+                    break;
+
+                case KeyType.List or KeyType.Set:
                 {
-                    WriteString(writer, item);
+                    var items = (IReadOnlyCollection<string>)key.Value;
+                    WriteByte(writer, key.Type == KeyType.List ? RdbTypes.List : RdbTypes.Set);
+                    WriteString(writer, key.Key);
+                    WriteLength(writer, items.Count);
+                    foreach (string item in items)
+                    {
+                        WriteString(writer, item);
+                    }
+
+                    break;
+                }
+
+                case KeyType.Hash:
+                {
+                    var fields = (IReadOnlyCollection<KeyValuePair<string, string>>)key.Value;
+                    WriteByte(writer, RdbTypes.Hash);
+                    WriteString(writer, key.Key);
+                    WriteLength(writer, fields.Count);
+                    foreach ((string field, string value) in fields)
+                    {
+                        WriteString(writer, field);
+                        WriteString(writer, value);
+                    }
+
+                    break;
+                }
+
+                case KeyType.SortedSet:
+                {
+                    var members = (IReadOnlyCollection<ScoredMember>)key.Value;
+                    WriteByte(writer, RdbTypes.SortedSet2);
+                    WriteString(writer, key.Key);
+                    WriteLength(writer, members.Count);
+                    foreach ((string member, double score) in members)
+                    {
+                        WriteString(writer, member);
+                        Span<byte> span = writer.GetSpan(8);
+                        BinaryPrimitives.WriteDoubleLittleEndian(span, score);
+                        writer.Advance(8);
+                    }
+
+                    break;
                 }
             }
 

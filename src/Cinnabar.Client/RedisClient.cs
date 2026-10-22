@@ -20,7 +20,7 @@ namespace Cinnabar.Client;
 /// Server error replies throw <see cref="RedisException"/>; network and protocol failures
 /// throw <see cref="RedisConnectionException"/>.
 /// </remarks>
-public sealed class RedisClient : IAsyncDisposable
+public sealed partial class RedisClient : IAsyncDisposable
 {
     private readonly ConnectionPool _pool;
     private readonly RedisClientOptions _options;
@@ -98,7 +98,10 @@ public sealed class RedisClient : IAsyncDisposable
         return ms < 0 ? null : TimeSpan.FromMilliseconds(ms);
     }
 
-    /// <summary><c>TYPE key</c>: <c>string</c>, <c>list</c>, <c>stream</c> or <c>none</c>.</summary>
+    /// <summary>
+    /// <c>TYPE key</c>: <c>string</c>, <c>list</c>, <c>stream</c>, <c>hash</c>, <c>set</c>,
+    /// <c>zset</c> or <c>none</c>.
+    /// </summary>
     public async Task<string> TypeAsync(string key, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["TYPE", key], cancellationToken).ConfigureAwait(false)).AsString() ?? "none";
 
@@ -342,6 +345,9 @@ public sealed class RedisClient : IAsyncDisposable
     }
 
     private static string Format(long value) => value.ToString(CultureInfo.InvariantCulture);
+
+    private static IEnumerable<string> Flatten(IEnumerable<KeyValuePair<string, string>> pairs) =>
+        pairs.SelectMany(pair => new[] { pair.Key, pair.Value });
 
     private static List<RedisStreamEntry> ParseEntries(RespValue reply)
     {

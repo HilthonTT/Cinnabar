@@ -14,4 +14,13 @@ public enum KeyType
 
     /// <summary>An append-only stream of entries.</summary>
     Stream,
+
+    /// <summary>A map of field to value.</summary>
+    Hash,
+
+    /// <summary>An unordered collection of unique strings.</summary>
+    Set,
+
+    /// <summary>Unique strings ordered by a floating-point score (Redis <c>zset</c>).</summary>
+    SortedSet,
 }

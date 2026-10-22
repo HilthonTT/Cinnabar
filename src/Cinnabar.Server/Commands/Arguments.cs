@@ -65,4 +65,40 @@ internal static class Arguments
 
     /// <summary>Formats a number for the wire.</summary>
     public static string Format(long value) => value.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Formats a floating-point number (a score) for the wire.</summary>
+    public static string Format(double value) => DoubleText.Format(value);
+
+    public const string NotAFloat = "ERR value is not a valid float";
+
+    /// <summary>Parses a float such as a score or an increment; <c>inf</c> is allowed, NaN is not.</summary>
+    public static double ParseDouble(string text) =>
+        DoubleText.TryParse(text, out double value) ? value : throw new StorageException(NotAFloat);
+
+    /// <summary>Parses a score-range end: <c>1.5</c>, <c>(1.5</c>, <c>-inf</c>, <c>+inf</c>.</summary>
+    public static ScoreBound ParseScoreBound(string text) =>
+        ScoreBound.TryParse(text, out ScoreBound bound) ? bound : throw new StorageException("ERR min or max is not a float");
+
+    /// <summary>Parses a lexicographic range end: <c>[a</c>, <c>(a</c>, <c>-</c>, <c>+</c>.</summary>
+    public static LexBound ParseLexBound(string text) =>
+        LexBound.TryParse(text, out LexBound bound) ? bound : throw new StorageException("ERR min or max not valid string range item");
+
+    /// <summary>
+    /// Reads <c>name value</c> pairs from <paramref name="start"/> to the end of the arguments.
+    /// The caller has checked that the count is even.
+    /// </summary>
+    public static List<KeyValuePair<string, string>> Pairs(Command command, int start)
+    {
+        var pairs = new List<KeyValuePair<string, string>>((command.Count - start) / 2);
+        for (int i = start; i + 1 < command.Count; i += 2)
+        {
+            pairs.Add(new KeyValuePair<string, string>(command[i], command[i + 1]));
+        }
+
+        return pairs;
+    }
+
+    /// <summary>The error for a command whose argument count has the wrong shape.</summary>
+    public static StorageException WrongArity(Command command) =>
+        new($"ERR wrong number of arguments for '{command.Name.ToLowerInvariant()}' command");
 }

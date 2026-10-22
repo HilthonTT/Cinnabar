@@ -192,10 +192,10 @@ public class RdbReaderEncodingTests
     }
 
     [Theory]
-    [InlineData((byte)2)]  // set
-    [InlineData((byte)3)]  // sorted set
-    [InlineData((byte)4)]  // hash
+    [InlineData((byte)11)] // intset
     [InlineData((byte)14)] // quicklist
+    [InlineData((byte)16)] // hash listpack
+    [InlineData((byte)17)] // sorted set listpack
     [InlineData((byte)15)] // stream
     public void Unsupported_value_type_is_not_supported(byte type)
     {

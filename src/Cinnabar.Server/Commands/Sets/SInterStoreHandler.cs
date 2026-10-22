@@ -1,0 +1,10 @@
+using Cinnabar.Storage;
+
+namespace Cinnabar.Server.Commands.Sets;
+
+/// <summary>
+/// <c>SINTERSTORE destination key [key ...]</c>: stores the intersection in
+/// <c>destination</c> (replacing it) and returns its size.
+/// </summary>
+[Command("SINTERSTORE", MinArgs = 2, Flags = CommandFlags.Write, Group = "set", Syntax = "destination key [key ...]")]
+internal sealed class SInterStoreHandler(Keyspace keyspace) : SetCombineStoreHandlerBase(keyspace, SetOperation.Intersect);

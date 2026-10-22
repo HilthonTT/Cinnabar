@@ -9,6 +9,9 @@ public class KeyspaceWrongTypeTests : KeyspaceTestBase
         Keyspace.SetString("string", "v");
         Keyspace.ListPush("list", ["a", "b"], ListEnd.Right);
         Keyspace.StreamAdd("stream", "1-1", Fields("f", "v"));
+        Keyspace.HashSetFields("hash", Fields("f", "v"));
+        Keyspace.SetAdd("set", ["m"]);
+        Keyspace.SortedSetAdd("zset", [new ScoredMember("m", 1)]);
     }
 
     private void Run(string operation, string key)
@@ -26,6 +29,15 @@ public class KeyspaceWrongTypeTests : KeyspaceTestBase
             case "StreamReadAfter": Keyspace.StreamReadAfter(key, StreamId.Min); break;
             case "StreamLastId": Keyspace.StreamLastId(key); break;
             case "StreamLength": Keyspace.StreamLength(key); break;
+            case "HashSetFields": Keyspace.HashSetFields(key, Fields("f", "v")); break;
+            case "HashGet": Keyspace.HashGet(key, "f"); break;
+            case "HashIncrementBy": Keyspace.HashIncrementBy(key, "f", 1); break;
+            case "SetAdd": Keyspace.SetAdd(key, ["x"]); break;
+            case "SetMembers": Keyspace.SetMembers(key); break;
+            case "SetPop": Keyspace.SetPop(key, 1); break;
+            case "SortedSetAdd": Keyspace.SortedSetAdd(key, [new ScoredMember("x", 1)]); break;
+            case "SortedSetRangeByRank": Keyspace.SortedSetRangeByRank(key, 0, -1); break;
+            case "SortedSetScores": Keyspace.SortedSetScores(key, ["x"]); break;
             default: throw new ArgumentOutOfRangeException(nameof(operation));
         }
     }
@@ -53,6 +65,21 @@ public class KeyspaceWrongTypeTests : KeyspaceTestBase
     [InlineData("StreamLastId", "list")]
     [InlineData("StreamLength", "string")]
     [InlineData("StreamLength", "list")]
+    [InlineData("GetString", "hash")]
+    [InlineData("ListPush", "set")]
+    [InlineData("StreamAdd", "zset")]
+    [InlineData("HashSetFields", "string")]
+    [InlineData("HashSetFields", "set")]
+    [InlineData("HashGet", "zset")]
+    [InlineData("HashIncrementBy", "list")]
+    [InlineData("SetAdd", "hash")]
+    [InlineData("SetAdd", "zset")]
+    [InlineData("SetMembers", "string")]
+    [InlineData("SetPop", "list")]
+    [InlineData("SortedSetAdd", "set")]
+    [InlineData("SortedSetAdd", "hash")]
+    [InlineData("SortedSetRangeByRank", "stream")]
+    [InlineData("SortedSetScores", "string")]
     public void Typed_operation_on_wrong_type_throws_wrongtype(string operation, string key)
     {
         Action act = () => Run(operation, key);
@@ -92,6 +119,9 @@ public class KeyspaceWrongTypeTests : KeyspaceTestBase
     [InlineData("string")]
     [InlineData("list")]
     [InlineData("stream")]
+    [InlineData("hash")]
+    [InlineData("set")]
+    [InlineData("zset")]
     public void Generic_operations_work_on_any_type(string key)
     {
         Keyspace.Exists(key).Should().BeTrue();

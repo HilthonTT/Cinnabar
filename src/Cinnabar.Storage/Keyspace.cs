@@ -4,7 +4,8 @@ using System.Globalization;
 namespace Cinnabar.Storage;
 
 /// <summary>
-/// The database: one map from key to value, where a value is a string, a list or a stream.
+/// The database: one map from key to value, where a value is a string, list, stream, hash,
+/// set or sorted set.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,19 +15,25 @@ namespace Cinnabar.Storage;
 /// <para>
 /// Thread safety: each key hashes to one of a fixed set of lock stripes, and every operation
 /// on a key runs while holding that key's stripe. Operations on a single key are therefore
-/// atomic; operations on different keys run in parallel. No operation holds two stripes, so
-/// there is no lock ordering to get wrong.
+/// atomic; operations on different keys run in parallel. Multi-key operations (<c>MSET</c>,
+/// <c>SMOVE</c>, <c>SINTERSTORE</c>, ...) take all their stripes at once, always in ascending
+/// stripe order, so they are atomic too and cannot deadlock with each other.
+/// </para>
+/// <para>
+/// Every change to a key gives it a new version (see <see cref="Touch(Entry)"/>).
 /// </para>
 /// <para>
 /// Expired keys are removed lazily on access and by a periodic sweep.
 /// </para>
 /// </remarks>
-public sealed class Keyspace : IDisposable
+public sealed partial class Keyspace : IDisposable
 {
     private const int StripeCount = 256;
     private const long NoExpiry = 0;
 
     private readonly ConcurrentDictionary<string, Entry> _entries = new(StringComparer.Ordinal);
+
+    private long _version;
     private readonly object[] _stripes;
     private readonly TimeProvider _time;
     private readonly ITimer? _evictionTimer;
@@ -86,6 +93,9 @@ public sealed class Keyspace : IDisposable
                 string => KeyType.String,
                 LinkedList<string> => KeyType.List,
                 StreamLog => KeyType.Stream,
+                Dictionary<string, string> => KeyType.Hash,
+                HashSet<string> => KeyType.Set,
+                SortedSetValue => KeyType.SortedSet,
                 _ => KeyType.None,
             };
         }
@@ -105,7 +115,7 @@ public sealed class Keyspace : IDisposable
     {
         lock (StripeFor(key))
         {
-            return GetLive(key) is not null && _entries.TryRemove(key, out _);
+            return GetLive(key) is not null && Remove(key);
         }
     }
 
@@ -135,11 +145,12 @@ public sealed class Keyspace : IDisposable
 
             if (unixTimeMilliseconds <= NowMs)
             {
-                _entries.TryRemove(key, out _);
+                Remove(key);
                 return true;
             }
 
             entry.ExpiresAtMs = unixTimeMilliseconds;
+            Touch(entry);
             return true;
         }
     }
@@ -156,6 +167,7 @@ public sealed class Keyspace : IDisposable
             }
 
             entry.ExpiresAtMs = NoExpiry;
+            Touch(entry);
             return true;
         }
     }
@@ -181,7 +193,7 @@ public sealed class Keyspace : IDisposable
     // ───────────────────────────── Strings ─────────────────────────────
 
     /// <summary>Returns the string at <paramref name="key"/>, or <see langword="null"/> if missing.</summary>
-    /// <exception cref="WrongTypeException">The key holds a list or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public string? GetString(string key)
     {
         lock (StripeFor(key))
@@ -238,7 +250,7 @@ public sealed class Keyspace : IDisposable
 
             long expiresAt = keepTtl ? existing?.ExpiresAtMs ?? NoExpiry : expiresAtMs ?? NoExpiry;
 
-            _entries[key] = new Entry(value, expiresAt);
+            Store(key, value, expiresAt);
             return true;
         }
     }
@@ -248,7 +260,7 @@ public sealed class Keyspace : IDisposable
     /// creating it from 0 if missing. The key's TTL is preserved.
     /// </summary>
     /// <returns>The new value.</returns>
-    /// <exception cref="WrongTypeException">The key holds a list or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     /// <exception cref="StorageException">The value is not an integer, or the result would overflow.</exception>
     public long IncrementBy(string key, long delta)
     {
@@ -283,11 +295,12 @@ public sealed class Keyspace : IDisposable
             string newValue = result.ToString(CultureInfo.InvariantCulture);
             if (entry is null)
             {
-                _entries[key] = new Entry(newValue, NoExpiry);
+                Store(key, newValue, NoExpiry);
             }
             else
             {
                 entry.Value = newValue;
+                Touch(entry);
             }
 
             return result;
@@ -301,13 +314,14 @@ public sealed class Keyspace : IDisposable
     /// <c>LPUSH k a b c</c> therefore yields <c>[c, b, a]</c>.
     /// </summary>
     /// <returns>The list length after the push.</returns>
-    /// <exception cref="WrongTypeException">The key holds a string or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public long ListPush(string key, IEnumerable<string> values, ListEnd end)
     {
         lock (StripeFor(key))
         {
             LinkedList<string>? existing = GetLive<LinkedList<string>>(key);
             LinkedList<string> list = existing ?? new LinkedList<string>();
+            int before = list.Count;
 
             foreach (string value in values)
             {
@@ -324,7 +338,11 @@ public sealed class Keyspace : IDisposable
             // Redis never stores an empty list: pushing nothing onto a missing key creates nothing.
             if (existing is null && list.Count > 0)
             {
-                _entries[key] = new Entry(list, NoExpiry);
+                Store(key, list, NoExpiry);
+            }
+            else if (list.Count != before)
+            {
+                Touch(key);
             }
 
             return list.Count;
@@ -336,7 +354,7 @@ public sealed class Keyspace : IDisposable
     /// A list that becomes empty is deleted, as in Redis.
     /// </summary>
     /// <returns>The removed elements, in removal order; empty if the key does not exist.</returns>
-    /// <exception cref="WrongTypeException">The key holds a string or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public IReadOnlyList<string> ListPop(string key, ListEnd end, int count = 1)
     {
         lock (StripeFor(key))
@@ -364,7 +382,11 @@ public sealed class Keyspace : IDisposable
 
             if (list.Count == 0)
             {
-                _entries.TryRemove(key, out _);
+                Remove(key);
+            }
+            else if (popped.Count > 0)
+            {
+                Touch(key);
             }
 
             return popped;
@@ -372,7 +394,7 @@ public sealed class Keyspace : IDisposable
     }
 
     /// <summary>Returns the list length, or 0 if the key does not exist.</summary>
-    /// <exception cref="WrongTypeException">The key holds a string or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public long ListLength(string key)
     {
         lock (StripeFor(key))
@@ -385,7 +407,7 @@ public sealed class Keyspace : IDisposable
     /// Returns elements between two inclusive indexes, using Redis <c>LRANGE</c> rules:
     /// negative indexes count from the end, and out-of-range indexes are clamped.
     /// </summary>
-    /// <exception cref="WrongTypeException">The key holds a string or stream.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public IReadOnlyList<string> ListRange(string key, long start, long stop)
     {
         lock (StripeFor(key))
@@ -426,7 +448,7 @@ public sealed class Keyspace : IDisposable
     /// <param name="id"><c>*</c>, <c>ms-*</c>, <c>ms-seq</c> or <c>ms</c>.</param>
     /// <param name="fields">Field/value pairs, kept in order.</param>
     /// <returns>The ID that was assigned.</returns>
-    /// <exception cref="WrongTypeException">The key holds a string or list.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     /// <exception cref="StorageException">The ID is invalid or not greater than the current top ID.</exception>
     public StreamId StreamAdd(string key, string id, IReadOnlyList<KeyValuePair<string, string>> fields)
     {
@@ -441,7 +463,11 @@ public sealed class Keyspace : IDisposable
 
             if (log is null)
             {
-                _entries[key] = new Entry(target, NoExpiry);
+                Store(key, target, NoExpiry);
+            }
+            else
+            {
+                Touch(key);
             }
 
             return newId;
@@ -449,7 +475,7 @@ public sealed class Keyspace : IDisposable
     }
 
     /// <summary>Entries with <paramref name="start"/> &lt;= ID &lt;= <paramref name="end"/> (<c>XRANGE</c>).</summary>
-    /// <exception cref="WrongTypeException">The key holds a string or list.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public IReadOnlyList<StreamEntry> StreamRange(string key, StreamId start, StreamId end, int? count = null)
     {
         lock (StripeFor(key))
@@ -459,7 +485,7 @@ public sealed class Keyspace : IDisposable
     }
 
     /// <summary>Entries with an ID strictly greater than <paramref name="after"/> (<c>XREAD</c>).</summary>
-    /// <exception cref="WrongTypeException">The key holds a string or list.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public IReadOnlyList<StreamEntry> StreamReadAfter(string key, StreamId after, int? count = null)
     {
         lock (StripeFor(key))
@@ -469,7 +495,7 @@ public sealed class Keyspace : IDisposable
     }
 
     /// <summary>The ID of the newest entry, or <see langword="null"/> if the stream does not exist.</summary>
-    /// <exception cref="WrongTypeException">The key holds a string or list.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public StreamId? StreamLastId(string key)
     {
         lock (StripeFor(key))
@@ -479,7 +505,7 @@ public sealed class Keyspace : IDisposable
     }
 
     /// <summary>Number of entries, or 0 if the stream does not exist.</summary>
-    /// <exception cref="WrongTypeException">The key holds a string or list.</exception>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public long StreamLength(string key)
     {
         lock (StripeFor(key))
@@ -516,6 +542,9 @@ public sealed class Keyspace : IDisposable
                     string text => new KeySnapshot(key, KeyType.String, text, expiresAt),
                     LinkedList<string> list => new KeySnapshot(key, KeyType.List, list.ToArray(), expiresAt),
                     StreamLog log => new KeySnapshot(key, KeyType.Stream, log.Entries.ToArray(), expiresAt),
+                    Dictionary<string, string> hash => new KeySnapshot(key, KeyType.Hash, hash.ToArray(), expiresAt),
+                    HashSet<string> set => new KeySnapshot(key, KeyType.Set, set.ToArray(), expiresAt),
+                    SortedSetValue zset => new KeySnapshot(key, KeyType.SortedSet, zset.Ascending.ToArray(), expiresAt),
                     _ => null,
                 };
 
@@ -552,12 +581,15 @@ public sealed class Keyspace : IDisposable
                 KeyType.String => (string)snapshot.Value,
                 KeyType.List => new LinkedList<string>((IEnumerable<string>)snapshot.Value),
                 KeyType.Stream => new StreamLog((IEnumerable<StreamEntry>)snapshot.Value),
+                KeyType.Hash => NewHash((IEnumerable<KeyValuePair<string, string>>)snapshot.Value),
+                KeyType.Set => new HashSet<string>((IEnumerable<string>)snapshot.Value, StringComparer.Ordinal),
+                KeyType.SortedSet => new SortedSetValue((IEnumerable<ScoredMember>)snapshot.Value),
                 _ => throw new ArgumentException($"Cannot load a key of type {snapshot.Type}.", nameof(keys)),
             };
 
             lock (StripeFor(snapshot.Key))
             {
-                _entries[snapshot.Key] = new Entry(value, expiresAt);
+                Store(snapshot.Key, value, expiresAt);
             }
 
             loaded++;
@@ -582,8 +614,7 @@ public sealed class Keyspace : IDisposable
             lock (StripeFor(key))
             {
                 // Re-check under the lock: the key may have been overwritten meanwhile.
-                if (_entries.TryGetValue(key, out Entry? current) && current.IsExpired(NowMs) &&
-                    _entries.TryRemove(new KeyValuePair<string, Entry>(key, current)))
+                if (_entries.TryGetValue(key, out Entry? current) && current.IsExpired(NowMs) && Remove(key))
                 {
                     removed++;
                 }
@@ -598,8 +629,56 @@ public sealed class Keyspace : IDisposable
 
     // ───────────────────────────── Internals ─────────────────────────────
 
-    private object StripeFor(string key) =>
-        _stripes[(StringComparer.Ordinal.GetHashCode(key) & int.MaxValue) % StripeCount];
+    private object StripeFor(string key) => _stripes[StripeIndex(key)];
+
+    private static int StripeIndex(string key) => (StringComparer.Ordinal.GetHashCode(key) & int.MaxValue) % StripeCount;
+
+    /// <summary>
+    /// Takes the stripes of every key in <paramref name="keys"/>, in ascending stripe order
+    /// (so two multi-key operations can never deadlock). Dispose the result to release them.
+    /// </summary>
+    private StripeSet LockKeys(IEnumerable<string> keys)
+    {
+        int[] indexes = keys.Select(StripeIndex).Distinct().Order().ToArray();
+        foreach (int index in indexes)
+        {
+            Monitor.Enter(_stripes[index]);
+        }
+
+        return new StripeSet(_stripes, indexes);
+    }
+
+    private long NextVersion() => Interlocked.Increment(ref _version);
+
+    /// <summary>Stores a new value with a fresh version. Caller must hold the key's stripe.</summary>
+    private void Store(string key, object value, long expiresAtMs) =>
+        _entries[key] = new Entry(value, expiresAtMs, NextVersion());
+
+    /// <summary>Records an in-place change to an entry. Caller must hold the key's stripe.</summary>
+    private void Touch(Entry entry) => entry.Version = NextVersion();
+
+    /// <summary>Records an in-place change to a key's value. Caller must hold the key's stripe.</summary>
+    private void Touch(string key)
+    {
+        if (_entries.TryGetValue(key, out Entry? entry))
+        {
+            Touch(entry);
+        }
+    }
+
+    /// <summary>Removes a key. Caller must hold the key's stripe.</summary>
+    private bool Remove(string key) => _entries.TryRemove(key, out _);
+
+    private static Dictionary<string, string> NewHash(IEnumerable<KeyValuePair<string, string>> fields)
+    {
+        var hash = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach ((string field, string value) in fields)
+        {
+            hash[field] = value;
+        }
+
+        return hash;
+    }
 
     /// <summary>Returns the live entry, removing it if expired. Caller must hold the key's stripe.</summary>
     private Entry? GetLive(string key)
@@ -611,7 +690,7 @@ public sealed class Keyspace : IDisposable
 
         if (entry.IsExpired(NowMs))
         {
-            _entries.TryRemove(key, out _);
+            Remove(key);
             return null;
         }
 
@@ -632,13 +711,28 @@ public sealed class Keyspace : IDisposable
 
     private static long SaturatingAdd(long a, long b) => b > long.MaxValue - a ? long.MaxValue : a + b;
 
-    private sealed class Entry(object value, long expiresAtMs)
+    private sealed class Entry(object value, long expiresAtMs, long version)
     {
         public object Value { get; set; } = value;
 
         /// <summary>Unix time in milliseconds, or <see cref="NoExpiry"/>.</summary>
         public long ExpiresAtMs { get; set; } = expiresAtMs;
 
+        /// <summary>Changes whenever the key is modified.</summary>
+        public long Version { get; set; } = version;
+
         public bool IsExpired(long nowMs) => ExpiresAtMs != NoExpiry && ExpiresAtMs <= nowMs;
+    }
+
+    /// <summary>Stripes held by <see cref="LockKeys"/>; releases them when disposed.</summary>
+    private readonly struct StripeSet(object[] stripes, int[] indexes) : IDisposable
+    {
+        public void Dispose()
+        {
+            for (int i = indexes.Length - 1; i >= 0; i--)
+            {
+                Monitor.Exit(stripes[indexes[i]]);
+            }
+        }
     }
 }
