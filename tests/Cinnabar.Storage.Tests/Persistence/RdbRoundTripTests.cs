@@ -92,10 +92,26 @@ public class RdbRoundTripTests
     [InlineData("emoji🎉", "🎉🎊")]
     public void Unicode_round_trips(string key, string value)
     {
-        KeySnapshot loaded = RoundTrip(new KeySnapshot(key, KeyType.String, value, null)).Single();
+        // Stored strings are byte strings: the UTF-8 bytes of the text, one per char.
+        string keyBytes = ByteString.FromText(key);
+        string valueBytes = ByteString.FromText(value);
 
-        loaded.Key.Should().Be(key);
-        loaded.Value.Should().Be(value);
+        KeySnapshot loaded = RoundTrip(new KeySnapshot(keyBytes, KeyType.String, valueBytes, null)).Single();
+
+        loaded.Key.Should().Be(keyBytes);
+        loaded.Value.Should().Be(valueBytes);
+        ByteString.ToText((string)loaded.Value).Should().Be(value);
+    }
+
+    [Fact]
+    public void Binary_values_round_trip_byte_for_byte()
+    {
+        byte[] payload = [.. Enumerable.Range(0, 256).Select(i => (byte)i), 0xC3, 0x28, 0xFF, 0x00];
+        string value = ByteString.FromBytes(payload);
+
+        KeySnapshot loaded = RoundTrip(new KeySnapshot("bin", KeyType.String, value, null)).Single();
+
+        ByteString.GetBytes((string)loaded.Value).Should().Equal(payload);
     }
 
     [Theory]

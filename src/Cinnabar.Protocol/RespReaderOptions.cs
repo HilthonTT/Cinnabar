@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Cinnabar.Protocol;
 
 /// <summary>
@@ -9,8 +11,28 @@ public sealed record RespReaderOptions
     /// <summary>Defaults suitable for reading replies from a trusted server.</summary>
     public static readonly RespReaderOptions Default = new();
 
-    /// <summary>Defaults for a server reading commands from untrusted clients.</summary>
-    public static readonly RespReaderOptions Server = new() { AllowInlineCommands = true };
+    /// <summary>
+    /// Defaults for a server reading commands from untrusted clients: inline commands are
+    /// allowed, and strings are decoded byte-for-byte (see <see cref="TextEncoding"/>).
+    /// </summary>
+    public static readonly RespReaderOptions Server = new()
+    {
+        AllowInlineCommands = true,
+        TextEncoding = Encoding.Latin1,
+    };
+
+    /// <summary>
+    /// Like <see cref="Default"/>, but decodes strings byte-for-byte (see <see cref="TextEncoding"/>).
+    /// </summary>
+    public static readonly RespReaderOptions ByteExact = new() { TextEncoding = Encoding.Latin1 };
+
+    /// <summary>
+    /// How payload bytes become .NET strings. UTF-8 (the default) suits clients that deal in
+    /// text. <see cref="Encoding.Latin1"/> maps every byte to exactly one <see cref="char"/>
+    /// (0–255) and back, so arbitrary binary payloads survive a round trip unchanged; pair it
+    /// with the same encoding in <see cref="RespEncoder"/>.
+    /// </summary>
+    public Encoding TextEncoding { get; init; } = Encoding.UTF8;
 
     /// <summary>
     /// Accept "inline" commands such as <c>PING\r\n</c> typed into telnet/netcat. An inline

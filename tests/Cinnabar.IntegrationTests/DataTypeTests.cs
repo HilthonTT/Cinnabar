@@ -1,8 +1,10 @@
+using System.Text;
 using Cinnabar.Client;
+using Cinnabar.Protocol;
 
 namespace Cinnabar.IntegrationTests;
 
-/// <summary>Hashes, sets and sorted sets through the client library.</summary>
+/// <summary>Hashes, sets, sorted sets and binary payloads through the client library and raw sockets.</summary>
 public sealed class DataTypeTests : IAsyncLifetime
 {
     private TestServer _server = null!;
@@ -84,5 +86,39 @@ public sealed class DataTypeTests : IAsyncLifetime
 
 
 
+    [Fact]
+    public async Task BinaryValues_RoundTripByteForByte()
+    {
+        await using RawConnection connection = await RawConnection.ConnectAsync(_server.Port);
 
+        // Every byte value, plus sequences that are not valid UTF-8.
+        byte[] value = [.. Enumerable.Range(0, 256).Select(i => (byte)i), 0xC3, 0x28, 0xED, 0xA0, 0x80, 0xFF];
+        byte[] key = [0xFF, 0xFE, (byte)'k'];
+
+        byte[] set =
+        [
+            .. "*3\r\n$3\r\nSET\r\n"u8.ToArray(),
+            .. Encoding.ASCII.GetBytes($"${key.Length}\r\n"), .. key, .. "\r\n"u8.ToArray(),
+            .. RespEncoder.BulkString(value),
+        ];
+        await connection.WriteAsync(set);
+        (await connection.ReadAsync()).AsString().Should().Be("OK");
+
+        byte[] get = [.. "*2\r\n$3\r\nGET\r\n"u8.ToArray(), .. Encoding.ASCII.GetBytes($"${key.Length}\r\n"), .. key, .. "\r\n"u8.ToArray()];
+        await connection.WriteAsync(get);
+        byte[] expected = RespEncoder.BulkString(value);
+        (await connection.ReadBytesAsync(expected.Length)).Should().Equal(expected);
+    }
+
+    [Fact]
+    public async Task BinaryHashFieldsAndSetMembers_AreDistinctByBytes()
+    {
+        await using RawConnection connection = await RawConnection.ConnectAsync(_server.Port);
+
+        // "é" precomposed (C3 A9) versus "e" + combining acute (65 CC 81): different bytes.
+        (await connection.CommandAsync("SADD", "s", "é", "é")).AsLong().Should().Be(2);
+        (await connection.CommandAsync("HSET", "h", "é", "1", "é", "2")).AsLong().Should().Be(2);
+        (await connection.CommandAsync("HSTRLEN", "h", "é")).AsLong().Should().Be(1);
+        (await connection.CommandAsync("HGET", "h", "é")).AsString().Should().Be("1");
+    }
 }

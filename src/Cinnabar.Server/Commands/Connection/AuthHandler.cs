@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Cinnabar.Server.Configuration;
 using Cinnabar.Server.Networking;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Commands.Connection;
 
@@ -21,12 +22,15 @@ internal sealed class AuthHandler(ServerSettings settings) : ICommandHandler
                 "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?"));
         }
 
-        string username = command.Count == 2 ? command[0] : security.Username;
-        string password = command[^1];
+        // Arguments are byte strings; the configured credentials are text.
+        byte[] username = command.Count == 2
+            ? ByteString.GetBytes(command[0])
+            : Encoding.UTF8.GetBytes(security.Username);
+        byte[] password = ByteString.GetBytes(command[^1]);
 
         // Compare both parts in constant time, and always compare both.
-        bool userMatches = FixedTimeEquals(username, security.Username);
-        bool passwordMatches = FixedTimeEquals(password, security.RequirePass!);
+        bool userMatches = FixedTimeEquals(username, Encoding.UTF8.GetBytes(security.Username));
+        bool passwordMatches = FixedTimeEquals(password, Encoding.UTF8.GetBytes(security.RequirePass!));
         if (!(userMatches & passwordMatches))
         {
             return ValueTask.FromResult(Reply.Error("WRONGPASS invalid username-password pair or user is disabled."));
@@ -36,8 +40,6 @@ internal sealed class AuthHandler(ServerSettings settings) : ICommandHandler
         return ValueTask.FromResult(Reply.Ok);
     }
 
-    private static bool FixedTimeEquals(string a, string b) =>
-        CryptographicOperations.FixedTimeEquals(
-            SHA256.HashData(Encoding.UTF8.GetBytes(a)),
-            SHA256.HashData(Encoding.UTF8.GetBytes(b)));
+    private static bool FixedTimeEquals(byte[] a, byte[] b) =>
+        CryptographicOperations.FixedTimeEquals(SHA256.HashData(a), SHA256.HashData(b));
 }

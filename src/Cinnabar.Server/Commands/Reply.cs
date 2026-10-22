@@ -1,11 +1,15 @@
 using System.Text;
 using Cinnabar.Protocol;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Commands;
 
 /// <summary>
 /// A pre-encoded response to a command, plus instructions for the connection and replication.
 /// </summary>
+/// <remarks>
+/// Strings are byte strings (see <see cref="ByteString"/>) and are encoded one byte per char.
+/// </remarks>
 internal sealed class Reply
 {
     private Reply(ReadOnlyMemory<byte> bytes, bool isError)
@@ -60,19 +64,19 @@ internal sealed class Reply
     public bool IsEmpty => Bytes.IsEmpty;
 
     /// <summary>Creates an error reply. Prefix it with an error code such as <c>ERR</c> or <c>WRONGTYPE</c>.</summary>
-    public static Reply Error(string message) => new(RespEncoder.Error(message), true);
+    public static Reply Error(string message) => new(RespEncoder.Error(message, ByteString.Encoding), true);
 
     /// <summary>Creates a simple string reply.</summary>
-    public static Reply SimpleString(string text) => new(RespEncoder.SimpleString(text), false);
+    public static Reply SimpleString(string text) => new(RespEncoder.SimpleString(text, ByteString.Encoding), false);
 
     /// <summary>Creates a bulk string reply, or <see cref="NullBulkString"/> for <see langword="null"/>.</summary>
-    public static Reply BulkString(string? text) => text is null ? NullBulkString : new(RespEncoder.BulkString(text), false);
+    public static Reply BulkString(string? text) => text is null ? NullBulkString : new(RespEncoder.BulkString(text, ByteString.Encoding), false);
 
     /// <summary>Creates an integer reply.</summary>
     public static Reply Integer(long value) => new(RespEncoder.Integer(value), false);
 
     /// <summary>Creates an array of bulk strings.</summary>
-    public static Reply BulkStringArray(IEnumerable<string?> values) => new(RespEncoder.BulkStringArray(values), false);
+    public static Reply BulkStringArray(IEnumerable<string?> values) => new(RespEncoder.BulkStringArray(values, ByteString.Encoding), false);
 
     /// <summary>Creates an array whose elements are other replies.</summary>
     public static Reply Array(IEnumerable<Reply> elements) =>
@@ -102,6 +106,6 @@ internal sealed class Reply
     /// <summary>Returns a copy that closes the connection once sent.</summary>
     public Reply ThenClose() => new(Bytes, IsError) { CloseConnection = true };
 
-    /// <summary>The wire bytes as text, for logs and tests.</summary>
+    /// <summary>The wire bytes decoded as UTF-8, for logs and tests.</summary>
     public override string ToString() => Encoding.UTF8.GetString(Bytes.Span);
 }

@@ -1,5 +1,6 @@
 using System.Text;
 using Cinnabar.Server.Commands;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Tests.Commands;
 
@@ -56,9 +57,16 @@ public sealed class ReplyTests
     }
 
     [Fact]
+    public void Bulk_string_writes_one_byte_per_char()
+    {
+        Reply.BulkString("\u00e9\u0000\u00ff").Bytes.ToArray()
+            .Should().Equal([(byte)'$', (byte)'3', 13, 10, 0xE9, 0x00, 0xFF, 13, 10]);
+    }
+
+    [Fact]
     public void Bulk_string_is_encoded_with_byte_length()
     {
-        Reply.BulkString("héllo").ToString().Should().Be("$6\r\nhéllo\r\n");
+        Reply.BulkString(ByteString.FromText("héllo")).ToString().Should().Be("$6\r\nhéllo\r\n");
         Reply.BulkString("").ToString().Should().Be("$0\r\n\r\n");
     }
 

@@ -91,6 +91,6 @@ internal sealed class InfoHandler(
 
         Section("Keyspace", ("db0", $"keys={keyspace.Keys().Count},expires=0"));
 
-        return ValueTask.FromResult(Reply.BulkString(text.ToString()));
+        return ValueTask.FromResult(Reply.BulkString(ByteString.FromText(text.ToString())));
     }
 }

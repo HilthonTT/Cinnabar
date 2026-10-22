@@ -169,7 +169,7 @@ internal sealed class ReplicationClient(
             while (true)
             {
                 long before = buffer.Length;
-                if (!RespReader.TryRead(ref buffer, out RespValue? value))
+                if (!RespReader.TryRead(ref buffer, out RespValue? value, RespReaderOptions.ByteExact))
                 {
                     break;
                 }

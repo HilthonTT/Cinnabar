@@ -56,9 +56,9 @@ public sealed class HashCommandTests : DispatcherTestBase
     [Fact]
     public async Task Hdel_hexists_hstrlen()
     {
-        await Run("HSET", "h", "a", "hello", "b", "2");
+        await Run("HSET", "h", "a", "héllo", "b", "2");
 
-        (await Run("HSTRLEN", "h", "a")).Should().Be(":5\r\n");
+        (await Run("HSTRLEN", "h", "a")).Should().Be(":6\r\n");
         (await Run("HEXISTS", "h", "a")).Should().Be(":1\r\n");
         (await Run("HDEL", "h", "a", "zz")).Should().Be(":1\r\n");
         (await Run("HEXISTS", "h", "a")).Should().Be(":0\r\n");

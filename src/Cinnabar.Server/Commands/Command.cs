@@ -1,11 +1,15 @@
 using System.Diagnostics.CodeAnalysis;
 using Cinnabar.Protocol;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Commands;
 
 /// <summary>
 /// A parsed client command: its name (for example <c>SET</c>) and its arguments.
 /// </summary>
+/// <remarks>
+/// Arguments are byte strings (see <see cref="ByteString"/>): one char per byte received.
+/// </remarks>
 internal sealed record Command(string Name, IReadOnlyList<string> Arguments)
 {
     /// <summary>Creates a command from a name and arguments.</summary>
@@ -49,8 +53,9 @@ internal sealed record Command(string Name, IReadOnlyList<string> Arguments)
     }
 
     /// <summary>Encodes the command the way a client sends it.</summary>
-    public byte[] Encode() => RespEncoder.Command([Name, .. Arguments]);
+    public byte[] Encode() => RespEncoder.Command([Name, .. Arguments], ByteString.Encoding);
 
-    /// <summary>The command as space-separated text, for logs.</summary>
-    public override string ToString() => Arguments.Count == 0 ? Name : $"{Name} {string.Join(' ', Arguments)}";
+    /// <summary>The command as space-separated text (arguments decoded as UTF-8), for logs.</summary>
+    public override string ToString() =>
+        Arguments.Count == 0 ? Name : $"{Name} {string.Join(' ', Arguments.Select(ByteString.ToText))}";
 }

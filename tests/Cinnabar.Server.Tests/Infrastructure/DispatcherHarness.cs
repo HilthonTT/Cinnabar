@@ -63,11 +63,15 @@ internal sealed class DispatcherHarness : IAsyncDisposable
     /// <summary>Dispatches on the default session.</summary>
     public Task<Reply> Dispatch(params string[] parts) => Dispatch(Session, parts);
 
-    /// <summary>Dispatches on <paramref name="session"/>.</summary>
+    /// <summary>
+    /// Dispatches on <paramref name="session"/>. Like a real client, the parts are sent as
+    /// UTF-8, so the server sees them as byte strings.
+    /// </summary>
     public async Task<Reply> Dispatch(ClientSession session, params string[] parts)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        return await Dispatcher.DispatchAsync(new Command(parts[0], parts[1..]), session, timeout.Token);
+        string[] wire = Array.ConvertAll(parts, ByteString.FromText);
+        return await Dispatcher.DispatchAsync(new Command(wire[0], wire[1..]), session, timeout.Token);
     }
 
     public async ValueTask DisposeAsync()

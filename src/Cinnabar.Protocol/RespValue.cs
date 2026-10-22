@@ -6,8 +6,8 @@ namespace Cinnabar.Protocol;
 /// An immutable, decoded RESP2 value.
 /// </summary>
 /// <remarks>
-/// Strings are decoded as UTF-8. Cinnabar treats keys and values as text, so
-/// arbitrary binary payloads are not round-tripped byte-for-byte.
+/// Strings are decoded with <see cref="RespReaderOptions.TextEncoding"/>: UTF-8 by default,
+/// or one <see cref="char"/> per byte on the server, so binary payloads round-trip exactly.
 /// </remarks>
 public sealed class RespValue
 {

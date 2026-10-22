@@ -32,7 +32,7 @@ internal sealed class ConfigHandler(ServerSettings settings, ServerState state) 
             if (command.Arguments.Skip(1).Any(pattern => KeyPattern.IsMatch(pattern.ToLowerInvariant(), name)))
             {
                 result.Add(name);
-                result.Add(value);
+                result.Add(ByteString.FromText(value));
             }
         }
 

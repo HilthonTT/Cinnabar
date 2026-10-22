@@ -8,6 +8,11 @@ namespace Cinnabar.Protocol;
 /// Encodes values into RESP2 wire bytes. Every method returns a new array, so the
 /// results can be cached and shared between threads.
 /// </summary>
+/// <remarks>
+/// Strings are encoded as UTF-8 unless an <see cref="Encoding"/> is passed. A server that
+/// keeps binary payloads one byte per <see cref="char"/> passes <see cref="Encoding.Latin1"/>,
+/// matching <see cref="RespReaderOptions.TextEncoding"/>.
+/// </remarks>
 public static class RespEncoder
 {
     /// <summary><c>+OK\r\n</c></summary>
@@ -23,20 +28,20 @@ public static class RespEncoder
     public static ReadOnlySpan<byte> EmptyArray => "*0\r\n"u8;
 
     /// <summary>Encodes a simple string. CR and LF are not allowed in simple strings and are replaced by spaces.</summary>
-    public static byte[] SimpleString(string text) => Line('+', text);
+    public static byte[] SimpleString(string text, Encoding? encoding = null) => Line('+', text, encoding);
 
     /// <summary>Encodes an error reply such as <c>ERR syntax error</c>. CR and LF are replaced by spaces.</summary>
-    public static byte[] Error(string message) => Line('-', message);
+    public static byte[] Error(string message, Encoding? encoding = null) => Line('-', message, encoding);
 
     /// <summary>Encodes an integer.</summary>
     public static byte[] Integer(long value) =>
         Encoding.ASCII.GetBytes($":{value.ToString(CultureInfo.InvariantCulture)}\r\n");
 
     /// <summary>Encodes a bulk string, or the null bulk string when <paramref name="value"/> is <see langword="null"/>.</summary>
-    public static byte[] BulkString(string? value)
+    public static byte[] BulkString(string? value, Encoding? encoding = null)
     {
         var writer = new ArrayBufferWriter<byte>();
-        WriteBulkString(writer, value);
+        WriteBulkString(writer, value, encoding ?? Encoding.UTF8);
         return writer.WrittenSpan.ToArray();
     }
 
@@ -51,14 +56,15 @@ public static class RespEncoder
     }
 
     /// <summary>Encodes an array of bulk strings; <see langword="null"/> elements become null bulk strings.</summary>
-    public static byte[] BulkStringArray(IEnumerable<string?> values)
+    public static byte[] BulkStringArray(IEnumerable<string?> values, Encoding? encoding = null)
     {
+        encoding ??= Encoding.UTF8;
         IReadOnlyCollection<string?> items = values as IReadOnlyCollection<string?> ?? values.ToList();
         var writer = new ArrayBufferWriter<byte>();
         WriteHeader(writer, '*', items.Count);
         foreach (string? item in items)
         {
-            WriteBulkString(writer, item);
+            WriteBulkString(writer, item, encoding);
         }
 
         return writer.WrittenSpan.ToArray();
@@ -82,20 +88,23 @@ public static class RespEncoder
     /// </summary>
     public static byte[] Command(params IEnumerable<string> parts) => BulkStringArray(parts);
 
+    /// <summary>Encodes a command, converting its strings with <paramref name="encoding"/>.</summary>
+    public static byte[] Command(IEnumerable<string> parts, Encoding encoding) => BulkStringArray(parts, encoding);
+
     /// <summary>Encodes <paramref name="value"/> back to its wire form.</summary>
-    public static byte[] Encode(RespValue value) => value.Type switch
+    public static byte[] Encode(RespValue value, Encoding? encoding = null) => value.Type switch
     {
-        RespType.SimpleString => SimpleString(value.Text ?? ""),
-        RespType.Error => Error(value.Text ?? ""),
+        RespType.SimpleString => SimpleString(value.Text ?? "", encoding),
+        RespType.Error => Error(value.Text ?? "", encoding),
         RespType.Integer => Integer(value.IntegerValue),
-        RespType.BulkString => BulkString(value.Text),
+        RespType.BulkString => BulkString(value.Text, encoding),
         RespType.Null => NullBulkString.ToArray(),
         RespType.NullArray => NullArray.ToArray(),
-        RespType.Array => Array(value.AsArray().Select(Encode).ToList()),
+        RespType.Array => Array(value.AsArray().Select(element => Encode(element, encoding)).ToList()),
         _ => throw new ArgumentOutOfRangeException(nameof(value)),
     };
 
-    private static void WriteBulkString(ArrayBufferWriter<byte> writer, string? value)
+    private static void WriteBulkString(ArrayBufferWriter<byte> writer, string? value, Encoding encoding)
     {
         if (value is null)
         {
@@ -103,9 +112,9 @@ public static class RespEncoder
             return;
         }
 
-        int byteCount = Encoding.UTF8.GetByteCount(value);
+        int byteCount = encoding.GetByteCount(value);
         WriteHeader(writer, '$', byteCount);
-        int written = Encoding.UTF8.GetBytes(value, writer.GetSpan(byteCount));
+        int written = encoding.GetBytes(value, writer.GetSpan(byteCount));
         writer.Advance(written);
         writer.Write("\r\n"u8);
     }
@@ -117,9 +126,9 @@ public static class RespEncoder
         writer.Advance(written);
     }
 
-    private static byte[] Line(char prefix, string text)
+    private static byte[] Line(char prefix, string text, Encoding? encoding)
     {
         string sanitized = text.Replace('\r', ' ').Replace('\n', ' ');
-        return Encoding.UTF8.GetBytes($"{prefix}{sanitized}\r\n");
+        return (encoding ?? Encoding.UTF8).GetBytes($"{prefix}{sanitized}\r\n");
     }
 }

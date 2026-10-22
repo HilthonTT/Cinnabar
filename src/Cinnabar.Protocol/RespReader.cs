@@ -11,6 +11,8 @@ namespace Cinnabar.Protocol;
 /// </summary>
 public static class RespReader
 {
+    private static readonly char[] InlineSeparators = [' ', '\t', '\r', '\n', '\v', '\f'];
+
     private static ReadOnlySpan<byte> CrLf => "\r\n"u8;
 
     /// <summary>
@@ -143,7 +145,7 @@ public static class RespReader
             return false;
         }
 
-        value = create(Decode(line.Slice(1)));
+        value = create(Decode(line.Slice(1), options));
         return true;
     }
 
@@ -182,7 +184,7 @@ public static class RespReader
             throw new RespProtocolException("Bulk string is not terminated by CRLF.");
         }
 
-        value = RespValue.BulkString(Decode(payload));
+        value = RespValue.BulkString(Decode(payload, options));
         return true;
     }
 
@@ -243,7 +245,9 @@ public static class RespReader
             return false;
         }
 
-        string[] parts = Decode(line).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        // Split on ASCII whitespace only: with a byte-exact encoding, chars such as U+00A0 are
+        // bytes inside a multi-byte UTF-8 sequence, not separators.
+        string[] parts = Decode(line, options).Split(InlineSeparators, StringSplitOptions.RemoveEmptyEntries);
         value = RespValue.Array(Array.ConvertAll(parts, RespValue.BulkString));
         return true;
     }
@@ -293,6 +297,8 @@ public static class RespReader
         return false;
     }
 
-    private static string Decode(ReadOnlySequence<byte> bytes) =>
-        bytes.IsSingleSegment ? Encoding.UTF8.GetString(bytes.FirstSpan) : Encoding.UTF8.GetString(in bytes);
+    private static string Decode(ReadOnlySequence<byte> bytes, RespReaderOptions options) =>
+        bytes.IsSingleSegment
+            ? options.TextEncoding.GetString(bytes.FirstSpan)
+            : options.TextEncoding.GetString(in bytes);
 }

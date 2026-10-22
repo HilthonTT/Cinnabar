@@ -154,7 +154,7 @@ public static class RdbWriter
 
     private static void WriteString(ArrayBufferWriter<byte> writer, string value)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        byte[] bytes = ByteString.Encoding.GetBytes(value);
         WriteLength(writer, bytes.Length);
         writer.Write(bytes);
     }

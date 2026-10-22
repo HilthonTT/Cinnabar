@@ -276,7 +276,7 @@ public static class RdbReader
             (long value, bool isEncoded) = ReadLengthOrEncoding();
             if (!isEncoded)
             {
-                return Encoding.UTF8.GetString(ReadBytes(checked((int)value)));
+                return ByteString.Encoding.GetString(ReadBytes(checked((int)value)));
             }
 
             return value switch
@@ -293,7 +293,7 @@ public static class RdbReader
         {
             int compressedLength = checked((int)ReadLength());
             int length = checked((int)ReadLength());
-            return Encoding.UTF8.GetString(Lzf.Decompress(ReadBytes(compressedLength), length));
+            return ByteString.Encoding.GetString(Lzf.Decompress(ReadBytes(compressedLength), length));
         }
 
         /// <summary>

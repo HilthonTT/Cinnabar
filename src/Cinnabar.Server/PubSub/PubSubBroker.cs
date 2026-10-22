@@ -1,5 +1,6 @@
 using Cinnabar.Protocol;
 using Cinnabar.Server.Networking;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.PubSub;
 
@@ -83,7 +84,7 @@ internal sealed class PubSubBroker
             subscribers = [.. set];
         }
 
-        byte[] payload = RespEncoder.BulkStringArray(["message", channel, message]);
+        byte[] payload = RespEncoder.BulkStringArray(["message", channel, message], ByteString.Encoding);
         int delivered = 0;
         foreach (ClientSession subscriber in subscribers)
         {

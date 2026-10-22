@@ -20,6 +20,9 @@ namespace Cinnabar.Storage;
 /// stripe order, so they are atomic too and cannot deadlock with each other.
 /// </para>
 /// <para>
+/// Keys and values are byte strings (see <see cref="ByteString"/>): one char per byte.
+/// </para>
+/// <para>
 /// Every change to a key gives it a new version (see <see cref="Touch(Entry)"/>).
 /// </para>
 /// <para>

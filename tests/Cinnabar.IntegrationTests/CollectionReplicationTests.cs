@@ -1,9 +1,10 @@
+using System.Text;
 using Cinnabar.Client;
 using Cinnabar.Protocol;
 
 namespace Cinnabar.IntegrationTests;
 
-/// <summary>Hashes, sets and sorted sets across full sync and the command stream.</summary>
+/// <summary>Hashes, sets, sorted sets and binary values across full sync and the command stream.</summary>
 public sealed class CollectionReplicationTests : IAsyncLifetime
 {
     private TestServer _master = null!;
@@ -92,4 +93,24 @@ public sealed class CollectionReplicationTests : IAsyncLifetime
     }
 
 
+    [Fact]
+    public async Task BinaryValues_ReplicateByteForByte()
+    {
+        await ConnectReplicaAsync();
+        byte[] value = [0x00, 0xFF, 0xC3, 0x28, (byte)'\r', (byte)'\n', 0x80];
+
+        await using (RawConnection connection = await RawConnection.ConnectAsync(_master.Port))
+        {
+            await connection.WriteAsync([.. "*3\r\n$3\r\nSET\r\n$3\r\nbin\r\n"u8.ToArray(), .. RespEncoder.BulkString(value)]);
+            (await connection.ReadAsync()).AsString().Should().Be("OK");
+        }
+
+        await Replication.UntilAsync(async () => await Replica.ExistsAsync("bin") == 1, "SET reaches the replica");
+
+        await using RawConnection replica = await RawConnection.ConnectAsync(_replica!.Port);
+        await replica.SendAsync("GET", "bin");
+        byte[] expected = RespEncoder.BulkString(value);
+        (await replica.ReadBytesAsync(expected.Length)).Should().Equal(expected);
+        Encoding.ASCII.GetString(expected, 0, 3).Should().Be("$7\r");
+    }
 }

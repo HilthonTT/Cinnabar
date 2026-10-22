@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using Cinnabar.Protocol;
 using Cinnabar.Server.Commands;
+using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Tests.Commands;
 
@@ -96,10 +97,10 @@ public sealed class CommandTests
     [Fact]
     public void Encode_round_trips_through_reader()
     {
-        var original = new Command("XADD", "stream", "*", "field", "line1\r\nline2", "é");
+        var original = new Command("XADD", "stream", "*", "field", "line1\r\nline2", ByteString.FromText("é"), "\u00ff\u0000");
         var buffer = new ReadOnlySequence<byte>(original.Encode());
 
-        RespReader.TryRead(ref buffer, out RespValue? value).Should().BeTrue();
+        RespReader.TryRead(ref buffer, out RespValue? value, RespReaderOptions.ByteExact).Should().BeTrue();
         Command.TryCreate(value!, out Command? parsed).Should().BeTrue();
 
         parsed!.Name.Should().Be(original.Name);
@@ -112,5 +113,11 @@ public sealed class CommandTests
     {
         new Command("SET", "k", "v").ToString().Should().Be("SET k v");
         new Command("PING").ToString().Should().Be("PING");
+    }
+
+    [Fact]
+    public void ToString_shows_utf8_arguments_as_text()
+    {
+        new Command("SET", "k", ByteString.FromText("héllo")).ToString().Should().Be("SET k héllo");
     }
 }
