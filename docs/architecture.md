@@ -1,8 +1,8 @@
 # Architecture
 
 This document explains how Cinnabar is put together: the projects, how a command travels
-through the server, and the design decisions behind concurrency, blocking commands,
-replication and persistence.
+through the server, and the design decisions behind binary safety, concurrency,
+transactions, blocking commands, replication and persistence.
 
 ## Projects and dependencies
 
@@ -23,8 +23,8 @@ replication and persistence.
 
 | Project | Responsibility | Key types |
 |---|---|---|
-| `Cinnabar.Protocol` | Parse and encode RESP2. Handles values split across TCP reads, pipelining, inline commands, and size/depth limits for untrusted input. | `RespReader`, `RespEncoder`, `RespValue` |
-| `Cinnabar.Storage` | The data. A single keyspace holding strings, lists and streams, with expiry and RDB snapshots. Thread-safe and independent of the network layer. | `Keyspace`, `StreamId`, `KeyPattern`, `RdbReader`, `RdbWriter` |
+| `Cinnabar.Protocol` | Parse and encode RESP2. Handles values split across TCP reads, pipelining, inline commands, and size/depth limits for untrusted input. Text decoding is configurable (UTF-8 for clients, byte-exact for the server). | `RespReader`, `RespEncoder`, `RespValue` |
+| `Cinnabar.Storage` | The data. A single keyspace holding strings, lists, hashes, sets, sorted sets and streams (with consumer groups), with expiry, `WATCH` versions, `SCAN` cursors and RDB snapshots. Thread-safe and independent of the network layer. | `Keyspace`, `ByteString`, `StreamId`, `KeyPattern`, `RdbReader`, `RdbWriter` |
 | `Cinnabar.Server` | Networking, command dispatch, pub/sub, blocking commands, replication, persistence scheduling, security, metrics. | `CinnabarServer`, `CommandDispatcher`, `ClientSession`, `ReplicationMaster`, `ReplicationClient` |
 | `Cinnabar.Client` | Pooled async client for applications. | `RedisClient`, `RedisSubscriber` |
 
@@ -49,9 +49,10 @@ replication and persistence.
    unknown command → not authenticated (`NOAUTH`) → wrong argument count →
    not allowed in subscribed mode → *queue it* if the session is inside `MULTI` →
    write on a replica (`READONLY`).
-5. **Execute.** The handler runs. A `StorageException` (for example `WRONGTYPE`) becomes an
-   error reply; any other exception becomes `-ERR ...` and is logged without killing the
-   connection.
+5. **Execute.** The handler runs while holding the transaction gate in shared mode (see
+   [Transactions](#transactions-and-watch)). A `StorageException` (for example `WRONGTYPE`)
+   becomes an error reply; any other exception becomes `-ERR ...` and is logged without
+   killing the connection.
 6. **Propagate.** On a master, a successful write is sent to every replica (see below),
    and the session remembers the replication offset for `WAIT`.
 7. **Reply.** The pre-encoded `Reply` bytes are written through `ClientSession.SendAsync`.
@@ -76,27 +77,86 @@ a command means adding one class. The attribute's `Flags` drive the dispatcher:
 | Flag | Meaning |
 |---|---|
 | `Write` | Rejected on replicas; propagated to replicas on a master. |
-| `Blocking` | May wait (BLPOP, XREAD BLOCK, WAIT). Blocking writes propagate their own effect. |
+| `Blocking` | May wait (BLPOP, XREAD BLOCK, XREADGROUP BLOCK, WAIT). Takes the transaction gate itself, only while it looks at data. Blocking writes propagate their own effect. |
 | `PubSub` | Allowed in subscribed mode. |
 | `NoAuth` | Allowed before `AUTH`. |
-| `Transaction` | Runs immediately inside `MULTI` instead of being queued. |
+| `Transaction` | Runs immediately inside `MULTI` instead of being queued (MULTI, EXEC, DISCARD, WATCH), and without the transaction gate. |
+| `NoGate` | Runs without the transaction gate because it is long-running and needs no isolation (PSYNC). |
 
-A handler can change what is replicated with `Reply.WithPropagation(...)`. `XADD *` uses this
-to send the generated ID, and `SET ... EX` sends an absolute `PXAT`, so replicas store
-identical data instead of re-running time- or ID-dependent logic.
+A handler can change what is replicated with `Reply.WithPropagation(...)`, so replicas store
+identical data instead of re-running time-, ID- or randomness-dependent logic:
+
+| Command | Replicated as |
+|---|---|
+| `XADD *` | `XADD` with the generated ID |
+| `SET ... EX/PX` | `SET ... PXAT` with an absolute time |
+| `SPOP` | `SREM` of the members actually removed |
+| `HINCRBYFLOAT` | `HSET` with the resulting value |
+| `XGROUP CREATE ... $` | `XGROUP CREATE` with the resolved ID |
+| `XREADGROUP`, `XCLAIM`, `XAUTOCLAIM` | `XCLAIM key group consumer 0 <ids> TIME <ms> ... FORCE LASTID <id>` |
+
+Writes that change nothing (`SADD` of an existing member, `DEL` of a missing key) are not
+replicated at all.
+
+## Binary safety
+
+Redis keys and values are byte strings, not text. Cinnabar keeps them in ordinary .NET
+`string`s, but with **one `char` per byte**: the server decodes RESP payloads as Latin-1
+(`RespReaderOptions.Server`), which maps each byte 0–255 to the `char` with the same value,
+and encodes replies, replication traffic and RDB files the same way. Any payload, including
+invalid UTF-8, therefore round-trips exactly, `STRLEN` counts bytes, members compare and
+sort byte by byte, and glob patterns match bytes, all as in Redis.
+
+So a UTF-8 value such as `é` (bytes `C3 A9`) is stored as two chars. Nothing in the server
+ever needs to interpret a value as text; the few places where server-side text meets client
+data go through `ByteString`: `AUTH` compares bytes against the configured password's UTF-8
+bytes, `CONFIG GET` and `INFO` convert their text, and `Command.ToString()` decodes
+arguments as UTF-8 for logs. The client library is unchanged: it speaks UTF-8 text.
+
+This design keeps every handler and the whole keyspace working on `string`, at the cost of
+two bytes of memory per payload byte (which UTF-16 strings already cost before).
 
 ## Storage and concurrency
 
 `Keyspace` keeps **one** `ConcurrentDictionary<string, Entry>` for all types. An entry
-holds the value (a `string`, a `LinkedList<string>` or a `StreamLog`) and an optional
-absolute expiry. Because there is a single map, a key can never hold two types at once:
-`SET` replaces a list, and `LPUSH` on a string raises `WRONGTYPE`.
+holds the value, an optional absolute expiry, and a version number. Because there is a
+single map, a key can never hold two types at once: `SET` replaces a list, and `LPUSH` on a
+string raises `WRONGTYPE`.
+
+| Type | Value |
+|---|---|
+| String | `string` |
+| List | `LinkedList<string>` |
+| Hash | `Dictionary<string, string>` |
+| Set | `HashSet<string>` |
+| Sorted set | `SortedSetValue`: a dictionary for O(1) score lookup plus a red-black tree (`SortedSet<ScoredMember>`) ordered by score, then member bytes |
+| Stream | `StreamLog`: entries sorted by ID, plus consumer groups |
+
+Collections are never stored empty: removing the last field, member or element deletes the
+key, as in Redis. `Keyspace` is split into partial files by type (`Keyspace.Hashes.cs`,
+`Keyspace.Sets.cs`, ...).
 
 **Locking.** Every key hashes to one of 256 lock stripes, and every operation holds its
 key's stripe for its whole duration. That makes each single-key operation atomic (for
 example `IncrementBy` or "pop and delete the list when it becomes empty") while operations
-on different keys run in parallel. No operation ever holds two stripes, so there are no
-lock-ordering deadlocks.
+on different keys run in parallel. Multi-key operations (`MGET`, `MSET`, `SMOVE`, `SINTER`,
+`SUNIONSTORE`, ...) take all of their stripes at once, always in ascending stripe order, so
+they are atomic too and two of them can never deadlock.
+
+**Versions.** Every change to a key (a write, a TTL change, deletion, expiry) gives it a
+fresh version from a global counter. `WATCH` records a key's version and `EXEC` compares it.
+While a key is watched, deleting it leaves a "tombstone" version, so delete-then-recreate
+and create-then-delete are both detected; tombstones are dropped when the last watcher
+leaves. In-place changes that change nothing (adding an existing set member) keep the
+version.
+
+**SCAN** orders items by a stable 64-bit FNV-1a hash of their name and uses the hash as the
+cursor. A page is "every item with a hash at or above the cursor, smallest first, up to
+`COUNT`" (extended so that colliding hashes never straddle two pages), and the next cursor
+is the following item's hash. Because the order never changes, an item that exists for the
+whole iteration is returned exactly once, whatever is added or removed in between, and
+cursors survive restarts. Finding a page walks every key, so a call costs O(n) where Redis's
+incremental hash-table walk is amortised O(1).
 
 **Expiry** is stored as Unix milliseconds and read through an injectable `TimeProvider`,
 so tests can move a fake clock instead of sleeping. Expired keys are invisible immediately
@@ -104,12 +164,41 @@ so tests can move a fake clock instead of sleeping. Expired keys are invisible i
 
 **Streams** (`StreamLog`) keep entries in a list sorted by `StreamId`, so ranges use a binary
 search. `XADD *` uses `max(now, last-ms)` so IDs keep increasing even if the system clock
-moves backwards.
+moves backwards. Each consumer group holds its last delivered ID, a pending entries list
+(PEL: ID → owner, delivery time, delivery count) ordered by ID, and each consumer's own set
+of pending IDs, so `XPENDING` ranges, `XREADGROUP` history reads and `XAUTOCLAIM` scans
+walk sorted structures.
+
+## Transactions and WATCH
+
+Redis runs one command at a time, so `MULTI`/`EXEC` is trivially isolated. Cinnabar runs
+commands from different connections in parallel, so it uses a `TransactionGate`, an async
+reader/writer gate:
+
+- Every ordinary command holds the gate in **shared** mode while it runs. Shared holders
+  don't block each other, so normal throughput is unaffected.
+- `EXEC` takes it **exclusively**: it waits for in-flight commands to finish, then checks
+  the watched keys' versions and runs the queued commands with nothing else running. If a
+  watched key changed, it returns a null array without running anything.
+- An exclusive request has priority over new shared ones, so a busy server can't starve
+  `EXEC`.
+
+Commands that wait must not hold the gate while waiting, or one client blocked in
+`BLPOP queue 0` would stall every `EXEC`, and with it every command queued behind that `EXEC`.
+So `BLPOP`, `BRPOP`, `XREAD` and `XREADGROUP` take the gate only for each attempt to read,
+and wait outside it. `PSYNC` skips the gate entirely: a full sync can take a long time, and
+a snapshot taken mid-transaction is completed by the transaction's remaining writes, which
+follow in the replication stream. Snapshots for `BGSAVE`, periodic and shutdown saves copy
+the keys under the gate, so a file never contains half a transaction.
+
+Lock order is always the transaction gate, then the replication `WriteBarrier`, then key
+stripes, so the three can't deadlock. The gate and the barrier share one implementation,
+`SharedExclusiveGate`.
 
 ## Blocking commands
 
-`BLPOP`, `BRPOP` and `XREAD BLOCK` use `KeyNotifier`. The order of operations is what makes
-them correct:
+`BLPOP`, `BRPOP`, `XREAD BLOCK` and `XREADGROUP BLOCK` use `KeyNotifier`. The order of
+operations is what makes them correct:
 
 1. **Register** interest in the keys.
 2. **Check** for data; return it if present.
@@ -178,10 +267,15 @@ reconnects with exponential back-off (up to 5 s) if the link drops.
 - **Save** on `SAVE`, `BGSAVE`, every `SaveIntervalSeconds`, and on graceful shutdown.
   Writes go to `dump.rdb.tmp` first and then replace the file, so a crash never leaves a
   half-written snapshot.
-- **Format.** RDB version 9 with a CRC-64/Jones checksum. Strings are type 0 and lists are
-  type 1 (the plain list encoding, which Redis can still load). Streams are skipped, with a
-  warning. The reader also understands integer-encoded and LZF-compressed strings, so it can
-  load string data from real Redis dumps.
+- **Format.** RDB version 9 with a CRC-64/Jones checksum. Strings are type 0; lists, sets,
+  hashes and sorted sets use the plain encodings (types 1, 2, 4 and 5, with scores as binary
+  doubles), which Redis can still load. Strings are written byte for byte. Streams are
+  skipped, with a warning. The reader also understands integer-encoded and LZF-compressed
+  strings and the older text-score sorted sets (type 3), but not the compact encodings
+  (listpacks, intsets, quicklists) that real Redis writes for small collections, so it loads
+  real dumps only if they contain strings and large collections.
+- **Consistency.** The keys are copied under the transaction gate before the file lock is
+  taken; a copy older than the file already written is dropped instead of overwriting it.
 
 ## Security and limits
 

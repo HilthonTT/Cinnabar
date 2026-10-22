@@ -51,12 +51,15 @@ public sealed class CartService(RedisClient redis)
 | Area | Methods |
 |---|---|
 | Server | `PingAsync`, `EchoAsync`, `InfoAsync`, `DbSizeAsync`, `FlushDbAsync`, `ConfigGetAsync` |
-| Keys | `DeleteAsync`, `ExistsAsync`, `ExpireAsync`, `PersistAsync`, `TimeToLiveAsync`, `TypeAsync`, `KeysAsync` |
-| Strings | `GetAsync`, `SetAsync` (optionally with expiry), `SetIfNotExistsAsync`, `IncrementAsync`, `DecrementAsync`, `IncrementByAsync`, `DecrementByAsync` |
+| Keys | `DeleteAsync`, `ExistsAsync`, `ExpireAsync`, `PersistAsync`, `TimeToLiveAsync`, `TypeAsync`, `KeysAsync`, `ScanAsync` |
+| Strings | `GetAsync`, `SetAsync` (optionally with expiry), `SetIfNotExistsAsync`, `MGetAsync`, `MSetAsync`, `MSetIfNotExistsAsync`, `StrLenAsync`, `IncrementAsync`, `DecrementAsync`, `IncrementByAsync`, `DecrementByAsync` |
 | Lists | `LPushAsync`, `RPushAsync`, `LPopAsync` (single or count), `RPopAsync`, `BLPopAsync`, `LLenAsync`, `LRangeAsync` |
+| Hashes | `HSetAsync` (one field or many), `HSetIfNotExistsAsync`, `HGetAsync`, `HMGetAsync`, `HGetAllAsync`, `HKeysAsync`, `HValsAsync`, `HDelAsync`, `HExistsAsync`, `HLenAsync`, `HIncrByAsync`, `HIncrByFloatAsync` |
+| Sets | `SAddAsync`, `SRemAsync`, `SIsMemberAsync`, `SMembersAsync`, `SCardAsync`, `SPopAsync`, `SMoveAsync`, `SInterAsync`, `SUnionAsync`, `SDiffAsync` |
+| Sorted sets | `ZAddAsync` (one member or many), `ZIncrByAsync`, `ZScoreAsync`, `ZRankAsync`, `ZCardAsync`, `ZCountAsync`, `ZRemAsync`, `ZRangeAsync`, `ZRangeByScoreAsync`, `ZPopAsync` |
 | Streams | `XAddAsync`, `XLenAsync`, `XRangeAsync` |
 | Pub/Sub | `PublishAsync`, `SubscribeAsync` |
-| Transactions | `ExecuteTransactionAsync` |
+| Transactions | `ExecuteTransactionAsync` (plain, or optimistic with `WATCH`) |
 | Anything else | `ExecuteAsync(params string[])` returns the raw `RespValue` |
 
 ```csharp
@@ -71,6 +74,41 @@ if (await client.SetIfNotExistsAsync("lock:invoice:7", Environment.MachineName, 
 
 RespValue raw = await client.ExecuteAsync("LRANGE", "jobs", "0", "-1");
 List<string?> items = raw.AsStringList();
+```
+
+Consumer groups (`XGROUP`, `XREADGROUP`, `XACK`, ...) and the less common commands have no
+typed method yet; use `ExecuteAsync`.
+
+## Hashes, sets and sorted sets
+
+```csharp
+await client.HSetAsync("user:1", [new("name", "Ada"), new("visits", "0")]);
+await client.HIncrByAsync("user:1", "visits", 1);
+Dictionary<string, string> user = await client.HGetAllAsync("user:1");
+
+await client.SAddAsync("online", "ada", "bob");
+bool online = await client.SIsMemberAsync("online", "ada");
+
+await client.ZAddAsync("scores", [new("ada", 120), new("bob", 95)]);
+await client.ZIncrByAsync("scores", "bob", 40);
+List<RedisSortedSetEntry> top3 = await client.ZRangeAsync("scores", 0, 2, descending: true);
+List<RedisSortedSetEntry> passed = await client.ZRangeByScoreAsync("scores", min: 100);
+long? rank = await client.ZRankAsync("scores", "ada", descending: true);
+```
+
+Scores are `double`s; `double.PositiveInfinity` and `double.NegativeInfinity` map to
+`+inf` and `-inf`.
+
+## Scanning keys
+
+`ScanAsync` pages through the keyspace with `SCAN`, so it never blocks the server with one
+huge reply the way `KeysAsync` can:
+
+```csharp
+await foreach (string key in client.ScanAsync(pattern: "session:*", type: "hash", pageSize: 500))
+{
+    // A key that exists for the whole loop is returned exactly once.
+}
 ```
 
 ## Blocking pops
@@ -141,7 +179,36 @@ long views = results[0].AsLong();
 
 Each element is that command's reply, which may be an error (check `IsError` or call
 `ThrowIfError()`). If the server aborts the transaction (`EXECABORT`), a `RedisException`
-is thrown.
+is thrown. Against Cinnabar, transactions are isolated: no other client's command runs in the
+middle of one.
+
+### Optimistic locking with WATCH
+
+To read a value and write something based on it without anyone changing it in between,
+pass the keys to watch and a callback. The callback gets a `read` function that runs
+commands on the transaction's connection, and returns the commands to queue:
+
+```csharp
+IReadOnlyList<RespValue>? result;
+do
+{
+    result = await client.ExecuteTransactionAsync(["account:7"], async read =>
+    {
+        long balance = long.Parse((await read(["HGET", "account:7", "balance"])).AsString() ?? "0");
+        if (balance < 10)
+        {
+            return [];  // nothing to do
+        }
+
+        return [["HINCRBY", "account:7", "balance", "-10"], ["RPUSH", "ledger:7", "-10"]];
+    });
+}
+while (result is null);  // a watched key changed before EXEC: nothing was written, try again
+```
+
+The result is `null` only when a watched key was modified (by anyone) between `WATCH` and
+`EXEC`. If the callback throws, the client sends `UNWATCH` before returning the connection
+to the pool.
 
 ## Errors
 

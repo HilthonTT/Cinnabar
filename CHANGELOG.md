@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Hashes**: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HDEL`,
+  `HEXISTS`, `HLEN`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`, `HSCAN`.
+- **Sets**: `SADD`, `SREM`, `SISMEMBER`, `SMISMEMBER`, `SMEMBERS`, `SCARD`, `SPOP`,
+  `SRANDMEMBER`, `SMOVE`, `SINTER`, `SUNION`, `SDIFF`, `SINTERSTORE`, `SUNIONSTORE`,
+  `SDIFFSTORE`, `SINTERCARD`, `SSCAN`.
+- **Sorted sets**: `ZADD` (with `NX`, `XX`, `GT`, `LT`, `CH`, `INCR`), `ZINCRBY`, `ZREM`,
+  `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK`/`ZREVRANK` (with `WITHSCORE`),
+  `ZRANGE` (by rank, `BYSCORE` or `BYLEX`, with `REV`, `LIMIT`, `WITHSCORES`), `ZREVRANGE`,
+  `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`,
+  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZSCAN`.
+- **Stream consumer groups**: `XGROUP` (`CREATE` with `MKSTREAM`, `SETID`, `DESTROY`,
+  `CREATECONSUMER`, `DELCONSUMER`), `XREADGROUP` (with `BLOCK` and `NOACK`), `XACK`,
+  `XPENDING`, `XCLAIM`, `XAUTOCLAIM`.
+- **`WATCH`/`UNWATCH`** for optimistic transactions. A watched key that is written, deleted,
+  expires or is flushed before `EXEC` makes `EXEC` return a null array.
+- **`SCAN`** with `MATCH`, `COUNT` and `TYPE`, guaranteeing that a key present for the whole
+  iteration is returned exactly once.
+- `MGET`, `MSET`, `MSETNX`, `STRLEN`.
+- RDB snapshots now include hashes, sets and sorted sets (RDB types 2, 4 and 5), and the
+  reader loads them, plus text-score sorted sets (type 3).
+- Client: typed methods for hashes, sets and sorted sets (`RedisSortedSetEntry`), `MGetAsync`,
+  `MSetAsync`, `MSetIfNotExistsAsync`, `StrLenAsync`, `ScanAsync` (an `IAsyncEnumerable`), and
+  an `ExecuteTransactionAsync` overload that watches keys and returns `null` when the
+  transaction was aborted.
+
+### Changed
+
+- **Binary safety.** The server now keeps keys and values as byte strings (one `char` per
+  byte, decoded as Latin-1) instead of decoding them as UTF-8. Any payload, including invalid
+  UTF-8, round-trips exactly; `STRLEN` and `HSTRLEN` count bytes; members sort byte by byte.
+  Clients that send UTF-8 text see no difference.
+- **Transactions are isolated.** `EXEC` runs while no other client's command is running
+  (a shared/exclusive `TransactionGate`), so its commands can no longer interleave with
+  other clients' commands. Blocking commands release the gate while they wait, so a blocked
+  `BLPOP` never stalls an `EXEC`.
+- Multi-key operations (`MSET`, `SMOVE`, `SINTERSTORE`, ...) lock all their keys at once, in
+  a fixed order, and are atomic.
+- Background, periodic and shutdown snapshots never contain half of a transaction, and an
+  older copy can no longer overwrite a newer file.
+- `TYPE` reports `hash`, `set` and `zset`.
+- Replication rewrites more commands so replicas stay identical: `SPOP` → `SREM` of the
+  removed members, `HINCRBYFLOAT` → `HSET` with the result, and consumer-group deliveries →
+  `XCLAIM ... TIME ... FORCE LASTID`.
+
+### Breaking changes
+
+- `Cinnabar.Protocol`: `RespEncoder.SimpleString`, `Error`, `BulkString(string)`,
+  `BulkStringArray` and `Encode` take an optional `Encoding`; this is source-compatible but
+  needs a recompile. `RespReaderOptions.Server` now decodes byte for byte (Latin-1); use the
+  new `TextEncoding` property to choose.
+- `Cinnabar.Storage`: `RdbReader` and `RdbWriter` treat strings as byte strings (Latin-1),
+  so text must be converted with `ByteString.FromText` before it is stored or written.
+  `KeyType` gained `Hash`, `Set` and `SortedSet`. `KeySnapshot.Value` can hold the new types.
+
 ## 1.0.0: redis-clone becomes Cinnabar
 
 The project is renamed **Cinnabar** and restructured into class libraries. Most of the code
