@@ -1,8 +1,8 @@
 namespace Cinnabar.Storage;
 
 /// <summary>
-/// The value of a stream key: entries kept sorted by ID. Not thread-safe; the
-/// <see cref="Keyspace"/> serialises access per key.
+/// The value of a stream key: entries kept sorted by ID, and its consumer groups. Not
+/// thread-safe; the <see cref="Keyspace"/> serialises access per key.
 /// </summary>
 internal sealed class StreamLog
 {
@@ -31,6 +31,23 @@ internal sealed class StreamLog
     public StreamId LastId => _entries.Count == 0 ? StreamId.Min : _entries[^1].Id;
 
     public IReadOnlyList<StreamEntry> Entries => _entries;
+
+    /// <summary>Consumer groups by name.</summary>
+    public Dictionary<string, StreamConsumerGroup> Groups { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Finds the entry with exactly <paramref name="id"/>.</summary>
+    public bool TryGet(StreamId id, out StreamEntry entry)
+    {
+        int index = LowerBound(id);
+        if (index < _entries.Count && _entries[index].Id == id)
+        {
+            entry = _entries[index];
+            return true;
+        }
+
+        entry = null!;
+        return false;
+    }
 
     /// <summary>
     /// Works out the ID XADD should use for <paramref name="requestedId"/>

@@ -92,6 +92,34 @@ public sealed class CollectionReplicationTests : IAsyncLifetime
         result.Should().BeApproximately(0.3, 1e-12);
     }
 
+    [Fact]
+    public async Task ConsumerGroupState_IsStreamed()
+    {
+        await ConnectReplicaAsync();
+
+        await Master.ExecuteAsync("XGROUP", "CREATE", "jobs", "workers", "$", "MKSTREAM");
+        await Master.XAddAsync("jobs", "1-1", [new("task", "a")]);
+        await Master.XAddAsync("jobs", "2-1", [new("task", "b")]);
+        await Master.XAddAsync("jobs", "3-1", [new("task", "c")]);
+        await Master.ExecuteAsync("XREADGROUP", "GROUP", "workers", "alice", "COUNT", "2", "STREAMS", "jobs", ">");
+        await Master.ExecuteAsync("XACK", "jobs", "workers", "1-1");
+        await Master.ExecuteAsync("XCLAIM", "jobs", "workers", "bob", "0", "2-1");
+
+        // A second reader must continue after 2-1 on the master; the replica must agree.
+        await Master.ExecuteAsync("XREADGROUP", "GROUP", "workers", "carol", "STREAMS", "jobs", ">");
+        await Master.SetAsync("marker", "done");
+        await Replication.UntilAsync(async () => await Replica.GetAsync("marker") == "done", "the writes reach the replica");
+
+        // Compare ID, owner and delivery count of every pending entry (idle times differ).
+        static async Task<List<string>> PendingAsync(RedisClient client) =>
+            [.. (await client.ExecuteAsync("XPENDING", "jobs", "workers", "-", "+", "10")).AsArray()
+                .Select(e => e.AsArray())
+                .Select(e => $"{e[0].AsString()} {e[1].AsString()} {e[3].AsLong()}")];
+
+        List<string> expected = ["2-1 bob 2", "3-1 carol 1"];
+        (await PendingAsync(Master)).Should().Equal(expected);
+        (await PendingAsync(Replica)).Should().Equal(expected);
+    }
 
     [Fact]
     public async Task BinaryValues_ReplicateByteForByte()

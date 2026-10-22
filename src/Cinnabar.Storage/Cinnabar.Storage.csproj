@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>Cinnabar.Storage</RootNamespace>
-    <Description>Thread-safe in-memory keyspace (strings, lists, streams) with expiry and RDB snapshots.</Description>
+    <Description>Thread-safe, binary-safe in-memory keyspace (strings, lists, hashes, sets, sorted sets, streams with consumer groups) with expiry, WATCH versions, SCAN and RDB snapshots.</Description>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
