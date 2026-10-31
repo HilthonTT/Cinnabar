@@ -17,8 +17,9 @@ namespace Cinnabar.Server.Commands;
 /// <remarks>
 /// Checks, in order: command exists → authenticated → argument count → allowed in
 /// subscribed mode → queue if inside MULTI → replica is read-only. It then runs the handler
-/// while holding the <see cref="TransactionGate"/> in shared mode, converts storage errors
-/// into replies, propagates successful writes to replicas, and records metrics.
+/// while holding the <see cref="TransactionGate"/> in shared mode, evicting keys first (or
+/// refusing the write with <c>OOM</c>) when a write arrives over <c>maxmemory</c>, converts
+/// storage errors into replies, propagates successful writes to replicas, and records metrics.
 /// </remarks>
 internal sealed class CommandDispatcher
 {
@@ -186,7 +187,10 @@ internal sealed class CommandDispatcher
                 barrier = await _master.Barrier.EnterSharedAsync(cancellationToken);
             }
 
-            reply = await InvokeAsync(registered.Handler, command, session, cancellationToken);
+            // Replicas leave eviction to their master, which replicates it as DEL.
+            reply = propagates && !EnforceMemoryLimit(spec, session)
+                ? Reply.Error("OOM command not allowed when used memory > 'maxmemory'.")
+                : await InvokeAsync(registered.Handler, command, session, cancellationToken);
 
             if (propagates && !reply.IsError && !reply.SkipPropagation)
             {
@@ -201,6 +205,36 @@ internal sealed class CommandDispatcher
 
         _metrics.RecordCommand(spec.Name, Stopwatch.GetElapsedTime(started), !reply.IsError);
         return reply;
+    }
+
+    /// <summary>
+    /// Before a write: if the keyspace is over <c>maxmemory</c>, evicts keys by the configured
+    /// policy and replicates each eviction as <c>DEL</c>. Caller holds the replication barrier.
+    /// </summary>
+    /// <returns>
+    /// <see langword="false"/> if the write must be refused because memory is still over the
+    /// limit and the command doesn't only free memory.
+    /// </returns>
+    private bool EnforceMemoryLimit(CommandAttribute spec, ClientSession session)
+    {
+        long limit = _settings.Memory.MaxMemoryBytes;
+        if (limit <= 0 || _keyspace.MemoryUsage <= limit)
+        {
+            return true;
+        }
+
+        IReadOnlyList<string> evicted = _keyspace.Evict(limit, _settings.Memory.Policy, _settings.Memory.MaxMemorySamples);
+        foreach (string key in evicted)
+        {
+            session.LastWriteOffset = _master.Propagate(new Command("DEL", key));
+        }
+
+        if (evicted.Count > 0)
+        {
+            _metrics.EvictedKeysTotal.Inc(evicted.Count);
+        }
+
+        return _keyspace.MemoryUsage <= limit || spec.Flags.HasFlag(CommandFlags.FreesMemory);
     }
 
     private async ValueTask<Reply> InvokeAsync(

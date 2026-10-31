@@ -54,6 +54,9 @@ internal sealed class ConfigHandler(ServerSettings settings, ServerState state) 
         ["save"] = settings.Persistence.SaveIntervalSeconds > 0
             ? $"{settings.Persistence.SaveIntervalSeconds} 0"
             : "",
+        ["maxmemory"] = Arguments.Format(settings.Memory.MaxMemoryBytes),
+        ["maxmemory-policy"] = EvictionPolicyNames.ToName(settings.Memory.Policy),
+        ["maxmemory-samples"] = Arguments.Format(settings.Memory.MaxMemorySamples),
         ["appendonly"] = "no",
         ["databases"] = "1",
     };

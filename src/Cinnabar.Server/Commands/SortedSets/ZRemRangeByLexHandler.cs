@@ -4,7 +4,7 @@ using Cinnabar.Storage;
 namespace Cinnabar.Server.Commands.SortedSets;
 
 /// <summary><c>ZREMRANGEBYLEX key min max</c>: removes members between two lexicographic bounds; returns how many.</summary>
-[Command("ZREMRANGEBYLEX", MinArgs = 3, MaxArgs = 3, Flags = CommandFlags.Write, Group = "sorted-set", Syntax = "key min max")]
+[Command("ZREMRANGEBYLEX", MinArgs = 3, MaxArgs = 3, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "sorted-set", Syntax = "key min max")]
 internal sealed class ZRemRangeByLexHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken) =>

@@ -30,8 +30,8 @@ public sealed class ServerCommandTests : DispatcherTestBase
         Reply reply = await H.Dispatch("CONFIG", "GET", "*");
 
         string text = reply.ToString();
-        text.Should().StartWith("*22\r\n");
-        foreach (string name in new[] { "bind", "port", "dir", "dbfilename", "requirepass", "masterauth", "replicaof", "maxclients", "save", "appendonly", "databases" })
+        text.Should().StartWith("*28\r\n");
+        foreach (string name in new[] { "bind", "port", "dir", "dbfilename", "requirepass", "masterauth", "replicaof", "maxclients", "save", "maxmemory", "maxmemory-policy", "maxmemory-samples", "appendonly", "databases" })
         {
             text.Should().Contain(Bulk(name));
         }

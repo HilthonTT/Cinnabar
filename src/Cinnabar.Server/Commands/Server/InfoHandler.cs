@@ -10,7 +10,7 @@ using Cinnabar.Storage;
 
 namespace Cinnabar.Server.Commands.Server;
 
-/// <summary><c>INFO [section]</c>: server, clients, replication, persistence and keyspace facts.</summary>
+/// <summary><c>INFO [section]</c>: server, clients, memory, stats, persistence, replication and keyspace facts.</summary>
 [Command("INFO", MaxArgs = 1, Group = "server", Syntax = "[section]")]
 internal sealed class InfoHandler(
     ServerSettings settings,
@@ -55,6 +55,14 @@ internal sealed class InfoHandler(
             ("connected_clients", ipGuard.TotalConnections),
             ("pubsub_channels", broker.ChannelCount),
             ("pubsub_patterns", broker.PatternCount));
+
+        Section("Memory",
+            ("used_memory", keyspace.MemoryUsage),
+            ("maxmemory", settings.Memory.MaxMemoryBytes),
+            ("maxmemory_policy", EvictionPolicyNames.ToName(settings.Memory.Policy)));
+
+        Section("Stats",
+            ("evicted_keys", keyspace.EvictedKeys));
 
         Section("Persistence",
             ("rdb_last_save_time", snapshots.LastSave?.ToUnixTimeSeconds() ?? 0),

@@ -35,6 +35,13 @@ internal enum CommandFlags
     /// need to be isolated from EXEC (PSYNC streams a whole snapshot to a replica).
     /// </summary>
     NoGate = 1 << 5,
+
+    /// <summary>
+    /// A write that only removes data (DEL, LPOP, LTRIM, ...), so it is still allowed when the
+    /// server is over <c>maxmemory</c> and cannot evict anything; every other write is then
+    /// refused with <c>OOM</c>.
+    /// </summary>
+    FreesMemory = 1 << 6,
 }
 
 /// <summary>

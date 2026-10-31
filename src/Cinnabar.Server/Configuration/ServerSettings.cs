@@ -15,6 +15,9 @@ public sealed class ServerSettings
     /// <summary>Master/replica configuration.</summary>
     public ReplicationSettings Replication { get; set; } = new();
 
+    /// <summary>Memory limit and eviction policy.</summary>
+    public MemorySettings Memory { get; set; } = new();
+
     /// <summary>Authentication, connection limits and rate limiting.</summary>
     public SecuritySettings Security { get; set; } = new();
 

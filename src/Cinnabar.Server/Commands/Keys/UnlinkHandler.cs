@@ -7,7 +7,7 @@ namespace Cinnabar.Server.Commands.Keys;
 /// <c>UNLINK key [key ...]</c>: number of keys removed. The same as DEL here; Redis frees the
 /// memory in the background, which the .NET garbage collector does anyway.
 /// </summary>
-[Command("UNLINK", MinArgs = 1, Flags = CommandFlags.Write, Group = "generic", Syntax = "key [key ...]")]
+[Command("UNLINK", MinArgs = 1, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "generic", Syntax = "key [key ...]")]
 internal sealed class UnlinkHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken) =>

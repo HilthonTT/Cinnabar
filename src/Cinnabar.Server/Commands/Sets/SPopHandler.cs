@@ -11,7 +11,7 @@ namespace Cinnabar.Server.Commands.Sets;
 /// Replicated as <c>SREM key popped...</c>: replicas must remove the same members, not
 /// pick their own at random.
 /// </remarks>
-[Command("SPOP", MinArgs = 1, MaxArgs = 2, Flags = CommandFlags.Write, Group = "set", Syntax = "key [count]")]
+[Command("SPOP", MinArgs = 1, MaxArgs = 2, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "set", Syntax = "key [count]")]
 internal sealed class SPopHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)

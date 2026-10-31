@@ -660,7 +660,8 @@ public sealed partial class Keyspace : IDisposable
         {
             lock (StripeFor(key))
             {
-                Entry? entry = GetLive(key);
+                // Saving is not a use of the key, so it must not refresh LRU times.
+                Entry? entry = GetLive(key, recordAccess: false);
                 if (entry is null)
                 {
                     continue;
@@ -781,12 +782,37 @@ public sealed partial class Keyspace : IDisposable
 
     private long NextVersion() => Interlocked.Increment(ref _version);
 
-    /// <summary>Stores a new value with a fresh version. Caller must hold the key's stripe.</summary>
-    private void Store(string key, object value, long expiresAtMs) =>
-        _entries[key] = new Entry(value, expiresAtMs, NextVersion());
+    /// <summary>
+    /// Stores a new value with a fresh version, and accounts for its size. Caller must hold the
+    /// key's stripe.
+    /// </summary>
+    private void Store(string key, object value, long expiresAtMs)
+    {
+        var entry = new Entry(key, value, expiresAtMs, NextVersion()) { LastAccessMs = NowMs };
+        entry.Size = EstimateSize(key, value);
 
-    /// <summary>Records an in-place change to an entry. Caller must hold the key's stripe.</summary>
-    private void Touch(Entry entry) => entry.Version = NextVersion();
+        if (_entries.TryGetValue(key, out Entry? previous))
+        {
+            Interlocked.Add(ref _memoryUsage, entry.Size - previous.Size);
+        }
+        else
+        {
+            Interlocked.Add(ref _memoryUsage, entry.Size);
+            _sampledKeys.Add(key);
+        }
+
+        _entries[key] = entry;
+    }
+
+    /// <summary>
+    /// Records an in-place change to an entry: a new version, and a new size estimate. Caller
+    /// must hold the key's stripe.
+    /// </summary>
+    private void Touch(Entry entry)
+    {
+        entry.Version = NextVersion();
+        Resize(entry.Key, entry);
+    }
 
     /// <summary>Records an in-place change to a key's value. Caller must hold the key's stripe.</summary>
     private void Touch(string key)
@@ -803,10 +829,13 @@ public sealed partial class Keyspace : IDisposable
     /// </summary>
     private bool Remove(string key)
     {
-        if (!_entries.TryRemove(key, out _))
+        if (!_entries.TryRemove(key, out Entry? removed))
         {
             return false;
         }
+
+        Interlocked.Add(ref _memoryUsage, -removed.Size);
+        _sampledKeys.Remove(key);
 
         if (_watchCounts.ContainsKey(key))
         {
@@ -827,18 +856,28 @@ public sealed partial class Keyspace : IDisposable
         return hash;
     }
 
-    /// <summary>Returns the live entry, removing it if expired. Caller must hold the key's stripe.</summary>
-    private Entry? GetLive(string key)
+    /// <summary>
+    /// Returns the live entry, removing it if expired, and records the access for LRU eviction
+    /// unless <paramref name="recordAccess"/> is <see langword="false"/>. Caller must hold the
+    /// key's stripe.
+    /// </summary>
+    private Entry? GetLive(string key, bool recordAccess = true)
     {
         if (!_entries.TryGetValue(key, out Entry? entry))
         {
             return null;
         }
 
-        if (entry.IsExpired(NowMs))
+        long now = NowMs;
+        if (entry.IsExpired(now))
         {
             Remove(key);
             return null;
+        }
+
+        if (recordAccess)
+        {
+            entry.LastAccessMs = now;
         }
 
         return entry;
@@ -858,9 +897,17 @@ public sealed partial class Keyspace : IDisposable
 
     private static long SaturatingAdd(long a, long b) => b > long.MaxValue - a ? long.MaxValue : a + b;
 
-    private sealed class Entry(object value, long expiresAtMs, long version)
+    private sealed class Entry(string key, object value, long expiresAtMs, long version)
     {
+        public string Key { get; } = key;
+
         public object Value { get; set; } = value;
+
+        /// <summary>Estimated bytes, as counted in <see cref="MemoryUsage"/>.</summary>
+        public long Size { get; set; }
+
+        /// <summary>Unix milliseconds of the last read or write, for LRU eviction.</summary>
+        public long LastAccessMs { get; set; }
 
         /// <summary>Unix time in milliseconds, or <see cref="NoExpiry"/>.</summary>
         public long ExpiresAtMs { get; set; } = expiresAtMs;

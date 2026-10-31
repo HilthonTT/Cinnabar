@@ -26,6 +26,10 @@ public static class CommandLine
                                    Run as a replica of the given master
                                    ("<host> <port>" and "<host>:<port>" also work)
           --masterauth <pass>      Password for the master
+          --maxmemory <size>       Memory limit for data, e.g. 100mb  (default 0 = none)
+          --maxmemory-policy <p>   noeviction|allkeys-lru|volatile-lru|allkeys-random|
+                                   volatile-random|volatile-ttl       (default noeviction)
+          --maxmemory-samples <n>  Keys sampled per eviction          (default 5)
           --metrics-port <port>    Prometheus endpoint port, 0 = off  (default 9090)
           --loglevel <level>       Trace|Debug|Information|Warning|Error (default Information)
           --help                   Show this help
@@ -82,6 +86,15 @@ public static class CommandLine
                 case "--masterauth":
                     settings.Replication.MasterAuth = Next(args, ref i, flag);
                     break;
+                case "--maxmemory":
+                    settings.Memory.MaxMemory = Next(args, ref i, flag);
+                    break;
+                case "--maxmemory-policy":
+                    settings.Memory.MaxMemoryPolicy = Next(args, ref i, flag);
+                    break;
+                case "--maxmemory-samples":
+                    settings.Memory.MaxMemorySamples = ParseInt(Next(args, ref i, flag), flag, min: 1);
+                    break;
                 case "--metrics-port":
                     settings.Diagnostics.MetricsPort = ParsePort(Next(args, ref i, flag), flag, allowZero: true);
                     break;
@@ -93,6 +106,8 @@ public static class CommandLine
             }
         }
 
+        // Fail at startup on a bad size or policy, whether it came from a flag or the file.
+        settings.Memory.Validate();
         return settings;
     }
 

@@ -4,7 +4,7 @@ using Cinnabar.Storage;
 namespace Cinnabar.Server.Commands.Hashes;
 
 /// <summary><c>HDEL key field [field ...]</c>: removes fields; returns how many existed.</summary>
-[Command("HDEL", MinArgs = 2, Flags = CommandFlags.Write, Group = "hash", Syntax = "key field [field ...]")]
+[Command("HDEL", MinArgs = 2, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "hash", Syntax = "key field [field ...]")]
 internal sealed class HDelHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken) =>

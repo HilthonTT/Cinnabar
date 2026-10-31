@@ -40,6 +40,12 @@ internal sealed class ServerMetrics
     public Gauge Keys { get; } = Metrics.CreateGauge(
         $"{Prefix}_keys", "Keys in the keyspace (may include expired keys not yet swept).");
 
+    public Gauge MemoryUsed { get; } = Metrics.CreateGauge(
+        $"{Prefix}_memory_used_bytes", "Estimated bytes used by stored data (what maxmemory is compared with).");
+
+    public Counter EvictedKeysTotal { get; } = Metrics.CreateCounter(
+        $"{Prefix}_evicted_keys_total", "Keys evicted because of the maxmemory limit.");
+
     public Gauge ConnectedReplicas { get; } = Metrics.CreateGauge(
         $"{Prefix}_replication_connected_replicas", "Replicas connected to this master.");
 

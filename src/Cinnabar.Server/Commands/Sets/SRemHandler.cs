@@ -4,7 +4,7 @@ using Cinnabar.Storage;
 namespace Cinnabar.Server.Commands.Sets;
 
 /// <summary><c>SREM key member [member ...]</c>: removes members; returns how many were present.</summary>
-[Command("SREM", MinArgs = 2, Flags = CommandFlags.Write, Group = "set", Syntax = "key member [member ...]")]
+[Command("SREM", MinArgs = 2, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "set", Syntax = "key member [member ...]")]
 internal sealed class SRemHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken) =>

@@ -7,7 +7,7 @@ namespace Cinnabar.Server.Commands.Streams;
 /// <c>XACK key group id [id ...]</c>: acknowledges entries, removing them from the group's
 /// pending list. Returns how many were pending.
 /// </summary>
-[Command("XACK", MinArgs = 3, Flags = CommandFlags.Write, Group = "stream", Syntax = "key group id [id ...]")]
+[Command("XACK", MinArgs = 3, Flags = CommandFlags.Write | CommandFlags.FreesMemory, Group = "stream", Syntax = "key group id [id ...]")]
 internal sealed class XAckHandler(Keyspace keyspace) : ICommandHandler
 {
     public ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)

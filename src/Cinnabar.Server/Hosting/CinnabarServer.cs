@@ -186,7 +186,11 @@ public sealed class CinnabarServer : IAsyncDisposable
 
         Keyspace keyspace = Keyspace;
         ServerMetrics metrics = _services.GetRequiredService<ServerMetrics>();
-        Metrics.DefaultRegistry.AddBeforeCollectCallback(() => metrics.Keys.Set(keyspace.Count));
+        Metrics.DefaultRegistry.AddBeforeCollectCallback(() =>
+        {
+            metrics.Keys.Set(keyspace.Count);
+            metrics.MemoryUsed.Set(keyspace.MemoryUsage);
+        });
 
         try
         {
