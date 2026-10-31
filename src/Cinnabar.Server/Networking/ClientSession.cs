@@ -70,8 +70,6 @@ internal sealed class ClientSession : IAsyncDisposable
     /// <summary>Cancelled when the session is closed.</summary>
     public CancellationToken Closed => _closed.Token;
 
-    // ───────────────────────── Transactions ─────────────────────────
-
     /// <summary>Inside MULTI.</summary>
     public bool InTransaction { get; private set; }
 
@@ -115,8 +113,6 @@ internal sealed class ClientSession : IAsyncDisposable
 
         WatchedKeys.Clear();
     }
-
-    // ───────────────────────── Pub/Sub ─────────────────────────
 
     /// <summary>Channels this session is subscribed to.</summary>
     public HashSet<string> Channels { get; } = new(StringComparer.Ordinal);
@@ -165,8 +161,6 @@ internal sealed class ClientSession : IAsyncDisposable
             // Session closed.
         }
     }
-
-    // ───────────────────────── I/O ─────────────────────────
 
     /// <summary>Writes bytes to the socket. Safe to call from several threads.</summary>
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)

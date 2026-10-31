@@ -15,8 +15,6 @@ public sealed class ClientApiTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _server.DisposeAsync();
 
-    // ─────────────────────────── Connection / server ───────────────────────────
-
     [Fact]
     public async Task Echo_ReturnsMessage()
     {
@@ -62,8 +60,6 @@ public sealed class ClientApiTests : IAsyncLifetime
         RespValue ttl = await Client.ExecuteAsync("TTL", "missing");
         ttl.AsLong().Should().Be(-2);
     }
-
-    // ─────────────────────────── Strings ───────────────────────────
 
     [Fact]
     public async Task Get_MissingKey_ReturnsNull()
@@ -152,8 +148,6 @@ public sealed class ClientApiTests : IAsyncLifetime
         (await act.Should().ThrowAsync<RedisException>()).Which.ErrorCode.Should().Be("ERR");
     }
 
-    // ─────────────────────────── Keys ───────────────────────────
-
     [Fact]
     public async Task Delete_And_Exists_WithSeveralKeys()
     {
@@ -192,8 +186,6 @@ public sealed class ClientApiTests : IAsyncLifetime
         (await Client.KeysAsync()).Should().HaveCount(3);
         (await Client.KeysAsync("user:?")).Should().HaveCount(2);
     }
-
-    // ─────────────────────────── Lists ───────────────────────────
 
     [Fact]
     public async Task Push_Range_Length()
@@ -288,8 +280,6 @@ public sealed class ClientApiTests : IAsyncLifetime
         }
     }
 
-    // ─────────────────────────── Streams ───────────────────────────
-
     [Fact]
     public async Task XAdd_XLen_XRange()
     {
@@ -323,8 +313,6 @@ public sealed class ClientApiTests : IAsyncLifetime
         (await act.Should().ThrowAsync<RedisException>()).Which.ErrorCode.Should().Be("ERR");
     }
 
-    // ─────────────────────────── Errors ───────────────────────────
-
     [Fact]
     public async Task WrongType_ThrowsRedisExceptionWithCode()
     {
@@ -353,8 +341,6 @@ public sealed class ClientApiTests : IAsyncLifetime
 
         (await Client.PingAsync()).Should().BeTrue();
     }
-
-    // ─────────────────────────── Transactions ───────────────────────────
 
     [Fact]
     public async Task ExecuteTransaction_ReturnsReplyPerCommand()

@@ -4,8 +4,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── Hashes ─────────────────────────────
-
     /// <summary>
     /// Sets fields of a hash (<c>HSET</c>), creating it if needed. Later pairs win when a field
     /// repeats.

@@ -13,8 +13,6 @@ public sealed class StreamCommandTests : DispatcherTestBase
 
     private static string Entries(params string[] entries) => $"*{entries.Length}\r\n" + string.Concat(entries);
 
-    // ───────────── XADD ─────────────
-
     [Fact]
     public async Task Xadd_with_explicit_id_returns_it()
     {
@@ -92,8 +90,6 @@ public sealed class StreamCommandTests : DispatcherTestBase
 
         reply.PropagateAs!.ToString().Should().Be($"XADD s {H.NowMs}-0 f v g w");
     }
-
-    // ───────────── XLEN / XRANGE ─────────────
 
     [Fact]
     public async Task Xlen_counts_entries()
@@ -174,8 +170,6 @@ public sealed class StreamCommandTests : DispatcherTestBase
     {
         (await Run("XRANGE", "s", "x", "+")).Should().Be("-ERR Invalid stream ID specified as stream command argument\r\n");
     }
-
-    // ───────────── XREAD ─────────────
 
     [Fact]
     public async Task Xread_returns_entries_after_id()

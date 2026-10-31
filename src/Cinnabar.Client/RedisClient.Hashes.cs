@@ -4,8 +4,6 @@ namespace Cinnabar.Client;
 
 public sealed partial class RedisClient
 {
-    // ─────────────────────────── Hashes ───────────────────────────
-
     /// <summary><c>HSET key field value</c>: <see langword="true"/> if the field is new.</summary>
     public async Task<bool> HSetAsync(string key, string field, string value, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["HSET", key, field, value], cancellationToken).ConfigureAwait(false)).AsLong() == 1;

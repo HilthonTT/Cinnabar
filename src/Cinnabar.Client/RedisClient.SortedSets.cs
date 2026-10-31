@@ -5,8 +5,6 @@ namespace Cinnabar.Client;
 
 public sealed partial class RedisClient
 {
-    // ─────────────────────────── Sorted sets ───────────────────────────
-
     /// <summary><c>ZADD key score member</c>: <see langword="true"/> if the member is new.</summary>
     public async Task<bool> ZAddAsync(string key, string member, double score, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["ZADD", key, FormatScore(score), member], cancellationToken).ConfigureAwait(false)).AsLong() == 1;

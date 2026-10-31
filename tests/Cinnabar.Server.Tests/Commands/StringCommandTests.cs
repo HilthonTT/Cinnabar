@@ -191,8 +191,6 @@ public sealed class StringCommandTests : DispatcherTestBase
         reply.PropagateAs!.ToString().Should().Be(new Command("SET", "k", "v").ToString());
     }
 
-    // ───────────── INCR family ─────────────
-
     [Fact]
     public async Task Incr_creates_missing_key()
     {

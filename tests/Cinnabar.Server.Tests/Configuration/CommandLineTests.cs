@@ -146,8 +146,6 @@ public sealed class CommandLineTests : IDisposable
         }
     }
 
-    // ───────────── --replicaof ─────────────
-
     [Fact]
     public void Replicaof_as_two_tokens()
     {
@@ -231,8 +229,6 @@ public sealed class CommandLineTests : IDisposable
 
         act.Should().Throw<ArgumentException>();
     }
-
-    // ───────────── --config ─────────────
 
     [Fact]
     public void Config_file_values_are_loaded()

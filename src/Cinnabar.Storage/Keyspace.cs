@@ -207,8 +207,6 @@ public sealed partial class Keyspace : IDisposable
         }
     }
 
-    // ───────────────────────────── Strings ─────────────────────────────
-
     /// <summary>Returns the string at <paramref name="key"/>, or <see langword="null"/> if missing.</summary>
     /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public string? GetString(string key)
@@ -372,8 +370,6 @@ public sealed partial class Keyspace : IDisposable
         return true;
     }
 
-    // ───────────────────────────── Lists ─────────────────────────────
-
     /// <summary>
     /// Pushes values one at a time onto <paramref name="end"/>, creating the list if needed.
     /// <c>LPUSH k a b c</c> therefore yields <c>[c, b, a]</c>.
@@ -504,8 +500,6 @@ public sealed partial class Keyspace : IDisposable
         }
     }
 
-    // ───────────────────────────── Streams ─────────────────────────────
-
     /// <summary>
     /// Appends an entry (<c>XADD</c>), creating the stream if needed.
     /// </summary>
@@ -578,8 +572,6 @@ public sealed partial class Keyspace : IDisposable
             return GetLive<StreamLog>(key)?.Count ?? 0;
         }
     }
-
-    // ───────────────────────────── Snapshots ─────────────────────────────
 
     /// <summary>
     /// Copies every live key. Each key is copied atomically; the snapshot as a whole is not
@@ -691,8 +683,6 @@ public sealed partial class Keyspace : IDisposable
 
     /// <summary>Stops the background sweep.</summary>
     public void Dispose() => _evictionTimer?.Dispose();
-
-    // ───────────────────────────── Internals ─────────────────────────────
 
     private object StripeFor(string key) => _stripes[StripeIndex(key)];
 

@@ -57,8 +57,6 @@ public sealed class DispatcherTests : DispatcherTestBase
         reply.ToString().Should().Be("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
     }
 
-    // ───────────── Subscribed mode ─────────────
-
     [Fact]
     public async Task Subscribed_mode_rejects_regular_commands()
     {
@@ -86,8 +84,6 @@ public sealed class DispatcherTests : DispatcherTestBase
 
         (await Run("GET", "k")).Should().Be("$-1\r\n");
     }
-
-    // ───────────── Propagation ─────────────
 
     [Fact]
     public async Task Successful_write_on_master_propagates()

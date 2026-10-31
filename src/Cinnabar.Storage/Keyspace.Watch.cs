@@ -2,8 +2,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── WATCH support ─────────────────────────────
-
     /// <summary>
     /// Starts watching <paramref name="key"/> and returns its current version. Pass the
     /// version to <see cref="IsUnchanged"/> later, and call <see cref="Unwatch"/> once per

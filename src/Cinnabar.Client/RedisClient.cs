@@ -45,8 +45,6 @@ public sealed partial class RedisClient : IAsyncDisposable
     /// <summary>The options this client uses.</summary>
     public RedisClientOptions Options => _options;
 
-    // ─────────────────────────── Connection / server ───────────────────────────
-
     /// <summary><c>PING</c>: <see langword="true"/> if the server answers PONG.</summary>
     public async Task<bool> PingAsync(CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["PING"], cancellationToken).ConfigureAwait(false)).AsString() == "PONG";
@@ -70,8 +68,6 @@ public sealed partial class RedisClient : IAsyncDisposable
     /// <summary><c>FLUSHDB</c>: deletes every key.</summary>
     public Task FlushDbAsync(CancellationToken cancellationToken = default) =>
         ExecuteAsync(["FLUSHDB"], cancellationToken);
-
-    // ─────────────────────────── Keys ───────────────────────────
 
     /// <summary><c>DEL key [key ...]</c>: number of keys removed.</summary>
     public async Task<long> DeleteAsync(params string[] keys) =>
@@ -148,8 +144,6 @@ public sealed partial class RedisClient : IAsyncDisposable
         while (cursor != "0");
     }
 
-    // ─────────────────────────── Strings ───────────────────────────
-
     /// <summary><c>GET key</c>: the value, or <see langword="null"/> if the key does not exist.</summary>
     public async Task<string?> GetAsync(string key, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["GET", key], cancellationToken).ConfigureAwait(false)).AsString();
@@ -209,8 +203,6 @@ public sealed partial class RedisClient : IAsyncDisposable
     public async Task<long> DecrementByAsync(string key, long delta, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["DECRBY", key, Format(delta)], cancellationToken).ConfigureAwait(false)).AsLong();
 
-    // ─────────────────────────── Lists ───────────────────────────
-
     /// <summary><c>LPUSH key value [value ...]</c>: the new length.</summary>
     public async Task<long> LPushAsync(string key, params string[] values) =>
         (await ExecuteAsync(["LPUSH", key, .. values]).ConfigureAwait(false)).AsLong();
@@ -262,8 +254,6 @@ public sealed partial class RedisClient : IAsyncDisposable
     public async Task<List<string?>> LRangeAsync(string key, long start = 0, long end = -1, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["LRANGE", key, Format(start), Format(end)], cancellationToken).ConfigureAwait(false)).AsStringList();
 
-    // ─────────────────────────── Streams ───────────────────────────
-
     /// <summary>
     /// <c>XADD key id field value [...]</c>: appends an entry and returns its ID.
     /// Use <c>*</c> as <paramref name="id"/> to let the server generate it.
@@ -309,8 +299,6 @@ public sealed partial class RedisClient : IAsyncDisposable
         return ParseEntries(await ExecuteAsync(command, cancellationToken).ConfigureAwait(false));
     }
 
-    // ─────────────────────────── Pub/Sub ───────────────────────────
-
     /// <summary><c>PUBLISH channel message</c>: number of subscribers that received it.</summary>
     public async Task<long> PublishAsync(string channel, string message, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["PUBLISH", channel, message], cancellationToken).ConfigureAwait(false)).AsLong();
@@ -333,8 +321,6 @@ public sealed partial class RedisClient : IAsyncDisposable
 
     /// <summary>Subscribes to <paramref name="channels"/>; see <see cref="SubscribeAsync(IReadOnlyCollection{string}, CancellationToken)"/>.</summary>
     public Task<RedisSubscriber> SubscribeAsync(params string[] channels) => SubscribeAsync(channels, CancellationToken.None);
-
-    // ─────────────────────────── Transactions ───────────────────────────
 
     /// <summary>
     /// Runs commands as a transaction (<c>MULTI</c> … <c>EXEC</c>) on one connection and
@@ -439,8 +425,6 @@ public sealed partial class RedisClient : IAsyncDisposable
         RespValue exec = replies[^1].ThrowIfError();
         return exec.IsNull ? null : exec.AsArray();
     }
-
-    // ─────────────────────────── Raw ───────────────────────────
 
     /// <summary>
     /// Runs any command and returns the raw reply. Error replies throw <see cref="RedisException"/>.

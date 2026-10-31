@@ -2,8 +2,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── Sorted sets ─────────────────────────────
-
     /// <summary>
     /// Adds members or updates their scores (<c>ZADD</c>), creating the sorted set if needed.
     /// </summary>

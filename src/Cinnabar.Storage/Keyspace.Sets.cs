@@ -2,8 +2,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── Sets ─────────────────────────────
-
     /// <summary>Adds members (<c>SADD</c>), creating the set if needed.</summary>
     /// <returns>The number of members that were not already present.</returns>
     /// <exception cref="WrongTypeException">The key holds another type.</exception>

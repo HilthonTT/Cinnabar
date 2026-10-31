@@ -2,8 +2,6 @@ namespace Cinnabar.Client;
 
 public sealed partial class RedisClient
 {
-    // ─────────────────────────── Sets ───────────────────────────
-
     /// <summary><c>SADD key member [member ...]</c>: the number of members that were new.</summary>
     public async Task<long> SAddAsync(string key, params string[] members) =>
         (await ExecuteAsync(["SADD", key, .. members], CancellationToken.None).ConfigureAwait(false)).AsLong();

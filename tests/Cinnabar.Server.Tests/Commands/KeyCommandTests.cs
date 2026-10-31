@@ -112,8 +112,6 @@ public sealed class KeyCommandTests : DispatcherTestBase
         (await Run("DBSIZE")).Should().Be(":1\r\n");
     }
 
-    // ───────────── Expiry ─────────────
-
     [Fact]
     public async Task Expire_on_existing_key_returns_one()
     {

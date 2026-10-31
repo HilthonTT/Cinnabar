@@ -2,8 +2,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── Stream consumer groups ─────────────────────────────
-
     /// <summary>
     /// Creates a consumer group (<c>XGROUP CREATE key group id [MKSTREAM]</c>). The group
     /// delivers entries after <paramref name="id"/>; <c>$</c> means "after the current last entry".

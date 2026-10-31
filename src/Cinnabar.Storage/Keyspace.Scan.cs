@@ -2,8 +2,6 @@ namespace Cinnabar.Storage;
 
 public sealed partial class Keyspace
 {
-    // ───────────────────────────── Scanning ─────────────────────────────
-
     /// <summary>
     /// One page of keys (<c>SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]</c>).
     /// Start with cursor 0 and repeat with <see cref="ScanPage{T}.Cursor"/> until it is 0 again.
