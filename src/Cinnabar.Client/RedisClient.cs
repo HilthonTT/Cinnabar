@@ -254,6 +254,86 @@ public sealed partial class RedisClient : IAsyncDisposable
     public async Task<List<string?>> LRangeAsync(string key, long start = 0, long end = -1, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["LRANGE", key, Format(start), Format(end)], cancellationToken).ConfigureAwait(false)).AsStringList();
 
+    /// <summary><c>LPUSHX key value [value ...]</c>: pushes only if the list exists; the new length, or 0.</summary>
+    public async Task<long> LPushIfExistsAsync(string key, params string[] values) =>
+        (await ExecuteAsync(["LPUSHX", key, .. values]).ConfigureAwait(false)).AsLong();
+
+    /// <summary><c>RPUSHX key value [value ...]</c>: pushes only if the list exists; the new length, or 0.</summary>
+    public async Task<long> RPushIfExistsAsync(string key, params string[] values) =>
+        (await ExecuteAsync(["RPUSHX", key, .. values]).ConfigureAwait(false)).AsLong();
+
+    /// <summary><c>LINDEX key index</c>: the element at an index (negative counts from the end), or <see langword="null"/>.</summary>
+    public async Task<string?> LIndexAsync(string key, long index, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["LINDEX", key, Format(index)], cancellationToken).ConfigureAwait(false)).AsString();
+
+    /// <summary><c>LSET key index value</c>: replaces the element at an index.</summary>
+    /// <exception cref="RedisException">The key does not exist or the index is out of range.</exception>
+    public Task LSetAsync(string key, long index, string value, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(["LSET", key, Format(index), value], cancellationToken);
+
+    /// <summary>
+    /// <c>LINSERT key BEFORE|AFTER pivot value</c>: the new length, -1 if the pivot was not
+    /// found, or 0 if the key does not exist.
+    /// </summary>
+    public async Task<long> LInsertAsync(string key, bool before, string pivot, string value, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["LINSERT", key, before ? "BEFORE" : "AFTER", pivot, value], cancellationToken).ConfigureAwait(false)).AsLong();
+
+    /// <summary>
+    /// <c>LREM key count value</c>: removes the first <paramref name="count"/> matches from the
+    /// head (positive), from the tail (negative), or all of them (0); the number removed.
+    /// </summary>
+    public async Task<long> LRemAsync(string key, long count, string value, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["LREM", key, Format(count), value], cancellationToken).ConfigureAwait(false)).AsLong();
+
+    /// <summary><c>LTRIM key start stop</c>: keeps only the inclusive range; negative indexes count from the end.</summary>
+    public Task LTrimAsync(string key, long start, long stop, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(["LTRIM", key, Format(start), Format(stop)], cancellationToken);
+
+    /// <summary><c>LPOS key element [RANK rank]</c>: the index of a matching element, or <see langword="null"/>.</summary>
+    /// <param name="key">The list key.</param>
+    /// <param name="element">The value to look for.</param>
+    /// <param name="rank">1 for the first match from the head, 2 for the second, -1 for the first from the tail...</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    public async Task<long?> LPosAsync(string key, string element, long rank = 1, CancellationToken cancellationToken = default)
+    {
+        RespValue reply = await ExecuteAsync(["LPOS", key, element, "RANK", Format(rank)], cancellationToken).ConfigureAwait(false);
+        return reply.IsNull ? null : reply.AsLong();
+    }
+
+    /// <summary>
+    /// <c>LMOVE source destination LEFT|RIGHT LEFT|RIGHT</c>: atomically pops from one end of
+    /// <paramref name="source"/> and pushes onto one end of <paramref name="destination"/>.
+    /// Returns the element, or <see langword="null"/> if the source is empty.
+    /// </summary>
+    /// <param name="source">The list to pop from.</param>
+    /// <param name="destination">The list to push onto (may be the same list).</param>
+    /// <param name="fromLeft">Pop from the head (<c>LEFT</c>) rather than the tail.</param>
+    /// <param name="toLeft">Push onto the head (<c>LEFT</c>) rather than the tail.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    public async Task<string?> LMoveAsync(string source, string destination, bool fromLeft, bool toLeft, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["LMOVE", source, destination, Side(fromLeft), Side(toLeft)], cancellationToken).ConfigureAwait(false)).AsString();
+
+    /// <summary>
+    /// <c>BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout</c>: like
+    /// <see cref="LMoveAsync"/>, but waits up to <paramref name="timeout"/> (forever if
+    /// <see langword="null"/>) for the source to receive an element. <see langword="null"/> on timeout.
+    /// </summary>
+    /// <remarks>Holds a pooled connection while waiting.</remarks>
+    public async Task<string?> BLMoveAsync(
+        string source,
+        string destination,
+        bool fromLeft,
+        bool toLeft,
+        TimeSpan? timeout,
+        CancellationToken cancellationToken = default)
+    {
+        string seconds = timeout is { } t ? t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) : "0";
+        return (await ExecuteAsync(["BLMOVE", source, destination, Side(fromLeft), Side(toLeft), seconds], cancellationToken)
+            .ConfigureAwait(false)).AsString();
+    }
+
+    private static string Side(bool left) => left ? "LEFT" : "RIGHT";
+
     /// <summary>
     /// <c>XADD key id field value [...]</c>: appends an entry and returns its ID.
     /// Use <c>*</c> as <paramref name="id"/> to let the server generate it.
