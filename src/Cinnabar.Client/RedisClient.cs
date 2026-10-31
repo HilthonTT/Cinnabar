@@ -593,7 +593,8 @@ public sealed partial class RedisClient : IAsyncDisposable
                 continue;
             }
 
-            IReadOnlyList<RespValue> flat = fieldList.AsArray();
+            // A pending entry that was deleted comes back with a null field list.
+            IReadOnlyList<RespValue> flat = fieldList.IsNull ? [] : fieldList.AsArray();
             var fields = new List<KeyValuePair<string, string>>(flat.Count / 2);
             for (int i = 0; i + 1 < flat.Count; i += 2)
             {
