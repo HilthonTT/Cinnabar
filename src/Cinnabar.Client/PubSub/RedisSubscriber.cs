@@ -35,22 +35,32 @@ public sealed class RedisSubscriber : IAsyncDisposable
     }
 
     /// <summary>
-    /// Subscribes and waits until the server has confirmed every channel, so messages
-    /// published after this returns are guaranteed to be delivered.
+    /// Subscribes and waits until the server has confirmed every channel and pattern, so
+    /// messages published after this returns are guaranteed to be delivered.
     /// </summary>
     internal static async Task<RedisSubscriber> StartAsync(
         RedisConnection connection,
         IReadOnlyCollection<string> channels,
+        IReadOnlyCollection<string> patterns,
         CancellationToken cancellationToken)
     {
         var subscriber = new RedisSubscriber(connection);
         try
         {
-            await connection.SendAsync(["SUBSCRIBE", .. channels], cancellationToken).ConfigureAwait(false);
-            for (int confirmed = 0; confirmed < channels.Count;)
+            if (channels.Count > 0)
+            {
+                await connection.SendAsync(["SUBSCRIBE", .. channels], cancellationToken).ConfigureAwait(false);
+            }
+
+            if (patterns.Count > 0)
+            {
+                await connection.SendAsync(["PSUBSCRIBE", .. patterns], cancellationToken).ConfigureAwait(false);
+            }
+
+            for (int confirmed = 0; confirmed < channels.Count + patterns.Count;)
             {
                 RespValue reply = (await connection.ReadAsync(cancellationToken).ConfigureAwait(false)).ThrowIfError();
-                if (Kind(reply) == "subscribe")
+                if (Kind(reply) is "subscribe" or "psubscribe")
                 {
                     confirmed++;
                 }
@@ -84,6 +94,12 @@ public sealed class RedisSubscriber : IAsyncDisposable
     /// <summary>Unsubscribes from channels; with no arguments, from all of them.</summary>
     public Task UnsubscribeAsync(params string[] channels) => SendAsync("UNSUBSCRIBE", channels);
 
+    /// <summary>Subscribes to more glob patterns. Confirmation is asynchronous.</summary>
+    public Task PSubscribeAsync(params string[] patterns) => SendAsync("PSUBSCRIBE", patterns);
+
+    /// <summary>Removes pattern subscriptions; with no arguments, all of them.</summary>
+    public Task PUnsubscribeAsync(params string[] patterns) => SendAsync("PUNSUBSCRIBE", patterns);
+
     private async Task SendAsync(string command, string[] channels)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -105,13 +121,20 @@ public sealed class RedisSubscriber : IAsyncDisposable
             while (!_stop.IsCancellationRequested)
             {
                 RespValue push = await _connection.ReadAsync(_stop.Token).ConfigureAwait(false);
-                if (Kind(push) == "message" && push.Elements is [_, var channel, var payload] &&
+                string? kind = Kind(push);
+                if (kind == "message" && push.Elements is [_, var channel, var payload] &&
                     channel.AsString() is { } channelName && payload.AsString() is { } text)
                 {
                     _messages.Writer.TryWrite(new RedisMessage(channelName, text));
                 }
+                else if (kind == "pmessage" && push.Elements is [_, var pattern, var matched, var body] &&
+                         pattern.AsString() is { } patternText && matched.AsString() is { } matchedChannel &&
+                         body.AsString() is { } bodyText)
+                {
+                    _messages.Writer.TryWrite(new RedisMessage(matchedChannel, bodyText, patternText));
+                }
 
-                // subscribe/unsubscribe confirmations need no action.
+                // (p)subscribe/(p)unsubscribe confirmations need no action.
             }
         }
         catch (Exception e) when (e is RedisConnectionException || _stop.IsCancellationRequested)

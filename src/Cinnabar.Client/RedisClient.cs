@@ -418,11 +418,31 @@ public sealed partial class RedisClient : IAsyncDisposable
         }
 
         RedisConnection connection = await RedisConnection.OpenAsync(_options, cancellationToken).ConfigureAwait(false);
-        return await RedisSubscriber.StartAsync(connection, channels, cancellationToken).ConfigureAwait(false);
+        return await RedisSubscriber.StartAsync(connection, channels, [], cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Subscribes to <paramref name="channels"/>; see <see cref="SubscribeAsync(IReadOnlyCollection{string}, CancellationToken)"/>.</summary>
     public Task<RedisSubscriber> SubscribeAsync(params string[] channels) => SubscribeAsync(channels, CancellationToken.None);
+
+    /// <summary>
+    /// Subscribes to every channel matching the glob <paramref name="patterns"/>
+    /// (<c>PSUBSCRIBE</c>) on a new dedicated connection. Messages carry the
+    /// <see cref="RedisMessage.Pattern"/> they matched. Dispose the subscriber to unsubscribe.
+    /// </summary>
+    public async Task<RedisSubscriber> PSubscribeAsync(IReadOnlyCollection<string> patterns, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (patterns.Count == 0)
+        {
+            throw new ArgumentException("Subscribe to at least one pattern.", nameof(patterns));
+        }
+
+        RedisConnection connection = await RedisConnection.OpenAsync(_options, cancellationToken).ConfigureAwait(false);
+        return await RedisSubscriber.StartAsync(connection, [], patterns, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Subscribes to <paramref name="patterns"/>; see <see cref="PSubscribeAsync(IReadOnlyCollection{string}, CancellationToken)"/>.</summary>
+    public Task<RedisSubscriber> PSubscribeAsync(params string[] patterns) => PSubscribeAsync(patterns, CancellationToken.None);
 
     /// <summary>
     /// Runs commands as a transaction (<c>MULTI</c> … <c>EXEC</c>) on one connection and

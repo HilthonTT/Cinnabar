@@ -5,7 +5,7 @@ namespace Cinnabar.Server.Commands.PubSub;
 
 /// <summary>
 /// <c>UNSUBSCRIBE [channel ...]</c>: leaves the given channels, or all of them. Leaving the
-/// last channel ends subscribed mode.
+/// last channel and pattern ends subscribed mode.
 /// </summary>
 [Command("UNSUBSCRIBE", Flags = CommandFlags.PubSub, Group = "pubsub", Syntax = "[channel [channel ...]]")]
 internal sealed class UnsubscribeHandler(PubSubBroker broker) : ICommandHandler
@@ -19,12 +19,12 @@ internal sealed class UnsubscribeHandler(PubSubBroker broker) : ICommandHandler
             IReadOnlyList<string> channels = broker.UnsubscribeAll(session);
             if (channels.Count == 0)
             {
-                replies.Add(Reply.Array([Reply.BulkString("unsubscribe"), Reply.NullBulkString, Reply.Zero]));
+                replies.Add(Reply.Array([Reply.BulkString("unsubscribe"), Reply.NullBulkString, Reply.Integer(session.SubscriptionCount)]));
             }
 
             for (int i = 0; i < channels.Count; i++)
             {
-                replies.Add(SubscribeHandler.PushReply("unsubscribe", channels[i], channels.Count - i - 1));
+                replies.Add(SubscribeHandler.PushReply("unsubscribe", channels[i], channels.Count - i - 1 + session.Patterns.Count));
             }
         }
         else

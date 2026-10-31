@@ -53,7 +53,8 @@ internal sealed class InfoHandler(
 
         Section("Clients",
             ("connected_clients", ipGuard.TotalConnections),
-            ("pubsub_channels", broker.ChannelCount));
+            ("pubsub_channels", broker.ChannelCount),
+            ("pubsub_patterns", broker.PatternCount));
 
         Section("Persistence",
             ("rdb_last_save_time", snapshots.LastSave?.ToUnixTimeSeconds() ?? 0),

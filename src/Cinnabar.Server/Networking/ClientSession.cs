@@ -117,11 +117,17 @@ internal sealed class ClientSession : IAsyncDisposable
     /// <summary>Channels this session is subscribed to.</summary>
     public HashSet<string> Channels { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Glob patterns this session is subscribed to (PSUBSCRIBE).</summary>
+    public HashSet<string> Patterns { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Channels plus patterns: the count reported in subscribe and unsubscribe replies.</summary>
+    public int SubscriptionCount => Channels.Count + Patterns.Count;
+
     /// <summary>
-    /// In subscribed mode only (UN)SUBSCRIBE, PING and QUIT are allowed. Mode ends when the
-    /// last channel is unsubscribed.
+    /// In subscribed mode only (P)(UN)SUBSCRIBE, PING and QUIT are allowed. Mode ends when the
+    /// last channel and pattern are unsubscribed.
     /// </summary>
-    public bool InSubscribedMode => Channels.Count > 0;
+    public bool InSubscribedMode => SubscriptionCount > 0;
 
     /// <summary>
     /// Queues a pushed message (pub/sub) without blocking the publisher. A background loop

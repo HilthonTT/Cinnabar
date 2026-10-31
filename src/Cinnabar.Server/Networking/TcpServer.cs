@@ -113,6 +113,7 @@ internal sealed class TcpServer(
         finally
         {
             broker.UnsubscribeAll(session);
+            broker.PatternUnsubscribeAll(session);
             master.RemoveReplica(session);
             await session.DisposeAsync();
 
