@@ -21,7 +21,7 @@ public class KeyspaceSnapshotTests : KeyspaceTestBase
         ((IEnumerable<string>)snapshot["l"].Value).Should().Equal("a", "b");
         snapshot["l"].ExpiresAt.Should().BeNull();
         snapshot["x"].Type.Should().Be(KeyType.Stream);
-        ((IEnumerable<StreamEntry>)snapshot["x"].Value).Single().Id.Should().Be(new StreamId(1, 1));
+        ((StreamSnapshot)snapshot["x"].Value).Entries.Single().Id.Should().Be(new StreamId(1, 1));
     }
 
     [Fact]

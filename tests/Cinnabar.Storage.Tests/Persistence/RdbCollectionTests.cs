@@ -67,7 +67,7 @@ public class RdbCollectionTests
     }
 
     [Fact]
-    public void Only_streams_are_skipped()
+    public void Every_type_is_written()
     {
         KeySnapshot[] keys =
         [
@@ -79,7 +79,7 @@ public class RdbCollectionTests
 
         RdbWriter.Write(keys, out RdbWriteResult result);
 
-        result.Should().Be(new RdbWriteResult(3, 1));
+        result.Should().Be(new RdbWriteResult(4, 0));
     }
 
     [Fact]

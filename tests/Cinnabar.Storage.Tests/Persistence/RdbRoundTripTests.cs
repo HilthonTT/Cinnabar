@@ -138,21 +138,82 @@ public class RdbRoundTripTests
     }
 
     [Fact]
-    public void Streams_are_skipped_and_counted()
+    public void Stream_entries_round_trip_with_expiry()
     {
-        StreamEntry[] entries = [new(new StreamId(1, 1), [new KeyValuePair<string, string>("f", "v")])];
+        DateTimeOffset expiry = DateTimeOffset.FromUnixTimeMilliseconds(4_102_444_800_000);
+        StreamEntry[] entries =
+        [
+            new(new StreamId(1, 1), [new KeyValuePair<string, string>("f", "v"), new KeyValuePair<string, string>("g", "\u00ff\u0000")]),
+            new(new StreamId(2, 0), [new KeyValuePair<string, string>("f", "w")]),
+        ];
 
         List<KeySnapshot> loaded = RoundTrip(
             [
                 new KeySnapshot("s", KeyType.String, "v", null),
-                new KeySnapshot("x", KeyType.Stream, entries, null),
-                new KeySnapshot("l", KeyType.List, new[] { "a" }, null),
-                new KeySnapshot("y", KeyType.Stream, entries, null),
+                new KeySnapshot("x", KeyType.Stream, entries, expiry),
             ],
             out RdbWriteResult result);
 
-        result.Should().Be(new RdbWriteResult(WrittenKeys: 2, SkippedKeys: 2));
-        loaded.Select(k => k.Key).Should().Equal("s", "l");
+        result.Should().Be(new RdbWriteResult(WrittenKeys: 2, SkippedKeys: 0));
+        KeySnapshot stream = loaded.Single(k => k.Key == "x");
+        stream.ExpiresAt.Should().Be(expiry);
+        var snapshot = (StreamSnapshot)stream.Value;
+        snapshot.Entries.Select(e => e.Id).Should().Equal(new StreamId(1, 1), new StreamId(2, 0));
+        snapshot.Entries[0].Fields.Should().Equal(entries[0].Fields);
+        snapshot.Groups.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Stream_consumer_groups_round_trip()
+    {
+        StreamEntry[] entries = [new(new StreamId(5, 0), [new KeyValuePair<string, string>("f", "v")])];
+        StreamGroupSnapshot group = new(
+            "g",
+            new StreamId(5, 0),
+            [new StreamConsumerSnapshot("alice", 1000), new StreamConsumerSnapshot("bob", 2000)],
+            [new StreamPendingSnapshot(new StreamId(5, 0), "bob", 1500, 3)]);
+
+        KeySnapshot loaded = RoundTrip(new KeySnapshot("x", KeyType.Stream, new StreamSnapshot(entries, [group]), null)).Single();
+
+        var snapshot = (StreamSnapshot)loaded.Value;
+        StreamGroupSnapshot restored = snapshot.Groups.Single();
+        restored.Name.Should().Be("g");
+        restored.LastDeliveredId.Should().Be(new StreamId(5, 0));
+        restored.Consumers.Should().Equal(group.Consumers);
+        restored.Pending.Should().Equal(group.Pending);
+    }
+
+    [Fact]
+    public void Empty_stream_with_a_group_round_trips()
+    {
+        StreamGroupSnapshot group = new("g", StreamId.Min, [], []);
+
+        KeySnapshot loaded = RoundTrip(new KeySnapshot("x", KeyType.Stream, new StreamSnapshot([], [group]), null)).Single();
+
+        ((StreamSnapshot)loaded.Value).Groups.Single().Name.Should().Be("g");
+    }
+
+    [Fact]
+    public void Keyspace_streams_and_groups_survive_rdb()
+    {
+        var time = new Microsoft.Extensions.Time.Testing.FakeTimeProvider(DateTimeOffset.UtcNow);
+        using var source = new Keyspace(time, TimeSpan.Zero);
+        source.StreamAdd("s", "1-1", [new KeyValuePair<string, string>("f", "a")]);
+        source.StreamAdd("s", "1-2", [new KeyValuePair<string, string>("f", "b")]);
+        source.StreamGroupCreate("s", "g", "0");
+        source.StreamReadGroup("s", "g", "alice", null, count: 1);
+
+        byte[] bytes = RdbWriter.Write(source.Snapshot(), out _);
+        using var target = new Keyspace(time, TimeSpan.Zero);
+        target.Load(RdbReader.Read(bytes).Databases[0]);
+
+        target.StreamLength("s").Should().Be(2);
+        StreamPendingSummary pending = target.StreamPending("s", "g");
+        pending.Count.Should().Be(1);
+        pending.Consumers.Should().ContainSingle().Which.Key.Should().Be("alice");
+
+        // The group resumes where it left off: the next new entry is 1-2.
+        target.StreamReadGroup("s", "g", "bob", null, count: 10).Single().Id.Should().Be(new StreamId(1, 2));
     }
 
     [Fact]

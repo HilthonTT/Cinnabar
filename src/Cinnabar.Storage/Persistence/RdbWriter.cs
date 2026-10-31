@@ -5,13 +5,14 @@ using System.Text;
 namespace Cinnabar.Storage.Persistence;
 
 /// <summary>
-/// Writes keys to an RDB snapshot (format version 9) that <see cref="RdbReader"/> and
-/// Redis itself can load. Strings are written as type 0, and lists, sets, sorted sets and
-/// hashes in their plain encodings: types 1, 2, 5 (scores as binary doubles) and 4.
+/// Writes keys to an RDB snapshot (format version 9) that <see cref="RdbReader"/> can load.
+/// Strings are written as type 0, and lists, sets, sorted sets and hashes in their plain
+/// encodings: types 1, 2, 5 (scores as binary doubles) and 4, which Redis can load too.
 /// </summary>
 /// <remarks>
-/// Streams are not written: the Redis stream encoding is out of scope. They are counted in
-/// <see cref="RdbWriteResult.SkippedKeys"/> so callers can warn about it.
+/// Streams, with their consumer groups, use Cinnabar's own encoding
+/// (<see cref="RdbTypes.CinnabarStream"/>), so a file that contains a stream loads in Cinnabar
+/// but not in Redis.
 /// </remarks>
 public static class RdbWriter
 {
@@ -57,7 +58,7 @@ public static class RdbWriter
 
         foreach (KeySnapshot key in keys)
         {
-            if (key.Type is KeyType.Stream or KeyType.None)
+            if (key.Type is KeyType.None)
             {
                 skipped++;
                 continue;
@@ -124,6 +125,12 @@ public static class RdbWriter
 
                     break;
                 }
+
+                case KeyType.Stream:
+                    WriteByte(writer, RdbTypes.CinnabarStream);
+                    WriteString(writer, key.Key);
+                    WriteStream(writer, StreamSnapshot.From(key.Value));
+                    break;
             }
 
             written++;
@@ -137,6 +144,66 @@ public static class RdbWriter
 
         result = new RdbWriteResult(written, skipped);
         return writer.WrittenSpan.ToArray();
+    }
+
+    /// <summary>
+    /// Writes a stream in the <see cref="RdbTypes.CinnabarStream"/> layout: a version byte, the
+    /// entries (ID, then field/value pairs), then each group's name, last delivered ID,
+    /// consumers (name, seen time) and pending entries (ID, owner, delivery time and count).
+    /// </summary>
+    private static void WriteStream(ArrayBufferWriter<byte> writer, StreamSnapshot stream)
+    {
+        WriteByte(writer, RdbTypes.CinnabarStreamVersion);
+
+        WriteLength(writer, stream.Entries.Count);
+        foreach (StreamEntry entry in stream.Entries)
+        {
+            WriteId(writer, entry.Id);
+            WriteLength(writer, entry.Fields.Count);
+            foreach ((string field, string value) in entry.Fields)
+            {
+                WriteString(writer, field);
+                WriteString(writer, value);
+            }
+        }
+
+        WriteLength(writer, stream.Groups.Count);
+        foreach (StreamGroupSnapshot group in stream.Groups)
+        {
+            WriteString(writer, group.Name);
+            WriteId(writer, group.LastDeliveredId);
+
+            WriteLength(writer, group.Consumers.Count);
+            foreach (StreamConsumerSnapshot consumer in group.Consumers)
+            {
+                WriteString(writer, consumer.Name);
+                WriteInt64(writer, consumer.SeenTimeMs);
+            }
+
+            WriteLength(writer, group.Pending.Count);
+            foreach (StreamPendingSnapshot pending in group.Pending)
+            {
+                WriteId(writer, pending.Id);
+                WriteString(writer, pending.Consumer);
+                WriteInt64(writer, pending.DeliveryTimeMs);
+                WriteInt64(writer, pending.DeliveryCount);
+            }
+        }
+    }
+
+    private static void WriteId(ArrayBufferWriter<byte> writer, StreamId id)
+    {
+        Span<byte> span = writer.GetSpan(16);
+        BinaryPrimitives.WriteUInt64LittleEndian(span, id.Milliseconds);
+        BinaryPrimitives.WriteUInt64LittleEndian(span[8..], id.Sequence);
+        writer.Advance(16);
+    }
+
+    private static void WriteInt64(ArrayBufferWriter<byte> writer, long value)
+    {
+        Span<byte> span = writer.GetSpan(8);
+        BinaryPrimitives.WriteInt64LittleEndian(span, value);
+        writer.Advance(8);
     }
 
     private static void WriteByte(ArrayBufferWriter<byte> writer, byte value)

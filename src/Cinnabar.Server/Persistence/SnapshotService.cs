@@ -114,7 +114,7 @@ internal sealed class SnapshotService(
             logger.LogInformation("Saved {Count} key(s) to {Path}.", result.WrittenKeys, path);
             if (result.SkippedKeys > 0)
             {
-                logger.LogWarning("{Count} stream key(s) were not saved; streams are not persisted.", result.SkippedKeys);
+                logger.LogWarning("{Count} key(s) of an unsupported type were not saved.", result.SkippedKeys);
             }
 
             return result;

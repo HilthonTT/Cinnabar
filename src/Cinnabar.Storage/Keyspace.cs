@@ -674,7 +674,7 @@ public sealed partial class Keyspace : IDisposable
                 {
                     string text => new KeySnapshot(key, KeyType.String, text, expiresAt),
                     LinkedList<string> list => new KeySnapshot(key, KeyType.List, list.ToArray(), expiresAt),
-                    StreamLog log => new KeySnapshot(key, KeyType.Stream, log.Entries.ToArray(), expiresAt),
+                    StreamLog log => new KeySnapshot(key, KeyType.Stream, log.ToSnapshot(), expiresAt),
                     Dictionary<string, string> hash => new KeySnapshot(key, KeyType.Hash, hash.ToArray(), expiresAt),
                     HashSet<string> set => new KeySnapshot(key, KeyType.Set, set.ToArray(), expiresAt),
                     SortedSetValue zset => new KeySnapshot(key, KeyType.SortedSet, zset.Ascending.ToArray(), expiresAt),
@@ -713,7 +713,7 @@ public sealed partial class Keyspace : IDisposable
             {
                 KeyType.String => (string)snapshot.Value,
                 KeyType.List => new LinkedList<string>((IEnumerable<string>)snapshot.Value),
-                KeyType.Stream => new StreamLog((IEnumerable<StreamEntry>)snapshot.Value),
+                KeyType.Stream => StreamLog.FromSnapshot(StreamSnapshot.From(snapshot.Value)),
                 KeyType.Hash => NewHash((IEnumerable<KeyValuePair<string, string>>)snapshot.Value),
                 KeyType.Set => new HashSet<string>((IEnumerable<string>)snapshot.Value, StringComparer.Ordinal),
                 KeyType.SortedSet => new SortedSetValue((IEnumerable<ScoredMember>)snapshot.Value),

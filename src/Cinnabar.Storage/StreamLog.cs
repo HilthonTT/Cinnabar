@@ -25,6 +25,53 @@ internal sealed class StreamLog
         }
     }
 
+    /// <summary>Rebuilds a stream, with its consumer groups, from a snapshot.</summary>
+    /// <exception cref="ArgumentException">The entries are out of order.</exception>
+    public static StreamLog FromSnapshot(StreamSnapshot snapshot)
+    {
+        var log = new StreamLog(snapshot.Entries);
+        foreach (StreamGroupSnapshot groupSnapshot in snapshot.Groups)
+        {
+            var group = new StreamConsumerGroup(groupSnapshot.LastDeliveredId);
+            foreach (StreamConsumerSnapshot consumer in groupSnapshot.Consumers)
+            {
+                group.Consumer(consumer.Name, consumer.SeenTimeMs);
+            }
+
+            foreach (StreamPendingSnapshot pending in groupSnapshot.Pending)
+            {
+                // A pending entry's owner always exists in a snapshot Cinnabar wrote; create it
+                // anyway so a hand-built snapshot can't leave the PEL pointing at nobody.
+                if (!group.Consumers.ContainsKey(pending.Consumer))
+                {
+                    group.Consumer(pending.Consumer, pending.DeliveryTimeMs);
+                }
+
+                group.Assign(pending.Id, pending.Consumer, pending.DeliveryTimeMs).DeliveryCount = pending.DeliveryCount;
+            }
+
+            log.Groups[groupSnapshot.Name] = group;
+        }
+
+        return log;
+    }
+
+    /// <summary>Copies the entries and consumer groups.</summary>
+    public StreamSnapshot ToSnapshot()
+    {
+        var groups = new List<StreamGroupSnapshot>(Groups.Count);
+        foreach ((string name, StreamConsumerGroup group) in Groups)
+        {
+            StreamConsumerSnapshot[] consumers =
+                [.. group.Consumers.Select(c => new StreamConsumerSnapshot(c.Key, c.Value.SeenTimeMs))];
+            StreamPendingSnapshot[] pending =
+                [.. group.Pending.Select(p => new StreamPendingSnapshot(p.Key, p.Value.Consumer, p.Value.DeliveryTimeMs, p.Value.DeliveryCount))];
+            groups.Add(new StreamGroupSnapshot(name, group.LastDeliveredId, consumers, pending));
+        }
+
+        return new StreamSnapshot([.. _entries], groups);
+    }
+
     public int Count => _entries.Count;
 
     /// <summary>The top ID, or 0-0 for an empty stream.</summary>

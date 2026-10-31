@@ -85,7 +85,7 @@ internal sealed class ReplicationMaster(Keyspace keyspace, ServerMetrics metrics
         if (result.SkippedKeys > 0)
         {
             logger.LogWarning(
-                "Full sync to replica {SessionId} skipped {Count} stream key(s); streams are not included in RDB snapshots.",
+                "Full sync to replica {SessionId} skipped {Count} key(s) of an unsupported type.",
                 session.Id,
                 result.SkippedKeys);
         }

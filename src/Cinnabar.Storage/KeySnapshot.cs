@@ -8,7 +8,7 @@ namespace Cinnabar.Storage;
 /// <list type="bullet">
 ///   <item><see cref="KeyType.String"/>: a <see cref="string"/>.</item>
 ///   <item><see cref="KeyType.List"/> and <see cref="KeyType.Set"/>: an <see cref="IReadOnlyList{T}"/> of strings.</item>
-///   <item><see cref="KeyType.Stream"/>: an <see cref="IReadOnlyList{T}"/> of <see cref="StreamEntry"/>.</item>
+///   <item><see cref="KeyType.Stream"/>: a <see cref="StreamSnapshot"/> (entries and consumer groups). <see cref="Keyspace.Load"/> also accepts a plain sequence of <see cref="StreamEntry"/>.</item>
 ///   <item><see cref="KeyType.Hash"/>: an <see cref="IReadOnlyList{T}"/> of field/value <see cref="KeyValuePair{TKey,TValue}"/>s.</item>
 ///   <item><see cref="KeyType.SortedSet"/>: an <see cref="IReadOnlyList{T}"/> of <see cref="ScoredMember"/>, in score order.</item>
 /// </list>

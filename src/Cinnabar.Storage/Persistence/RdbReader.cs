@@ -10,9 +10,10 @@ namespace Cinnabar.Storage.Persistence;
 /// <remarks>
 /// Supported: string values (raw, integer-encoded and LZF-compressed), the plain encodings
 /// of lists, sets, sorted sets (types 3 and 5) and hashes, as written by <see cref="RdbWriter"/>,
-/// second and millisecond expiry, auxiliary fields, resize hints, and LRU/LFU hints. The
-/// compact encodings real Redis writes for small collections (listpacks, intsets, quicklists)
-/// and streams raise <see cref="NotSupportedException"/>.
+/// streams in Cinnabar's own encoding (<see cref="RdbTypes.CinnabarStream"/>), second and
+/// millisecond expiry, auxiliary fields, resize hints, and LRU/LFU hints. The compact
+/// encodings real Redis writes for small collections (listpacks, intsets, quicklists) and
+/// Redis's own stream encoding raise <see cref="NotSupportedException"/>.
 /// </remarks>
 public static class RdbReader
 {
@@ -184,10 +185,77 @@ public static class RdbReader
                 return new KeySnapshot(key, KeyType.SortedSet, members, expiresAt);
             }
 
+            case RdbTypes.CinnabarStream:
+            {
+                string key = reader.ReadString();
+                return new KeySnapshot(key, KeyType.Stream, ReadStream(ref reader, key), expiresAt);
+            }
+
             default:
                 throw new NotSupportedException(
-                    $"RDB value type {type} is not supported (Cinnabar loads strings and the plain list, set, sorted set and hash encodings).");
+                    $"RDB value type {type} is not supported (Cinnabar loads strings, the plain list, set, sorted set and hash encodings, and streams it wrote itself).");
         }
+    }
+
+    /// <summary>Reads a stream written by <see cref="RdbWriter"/> (see <see cref="RdbTypes.CinnabarStream"/>).</summary>
+    private static StreamSnapshot ReadStream(ref Cursor reader, string key)
+    {
+        byte version = reader.ReadByte();
+        if (version != RdbTypes.CinnabarStreamVersion)
+        {
+            throw new NotSupportedException($"Stream '{key}' uses encoding version {version}, which this version of Cinnabar cannot read.");
+        }
+
+        long entryCount = reader.ReadLength();
+        var entries = new List<StreamEntry>((int)Math.Min(entryCount, 1024));
+        for (long i = 0; i < entryCount; i++)
+        {
+            StreamId id = reader.ReadStreamId();
+            long fieldCount = reader.ReadLength();
+            var fields = new List<KeyValuePair<string, string>>((int)Math.Min(fieldCount, 1024));
+            for (long f = 0; f < fieldCount; f++)
+            {
+                string field = reader.ReadString();
+                fields.Add(new KeyValuePair<string, string>(field, reader.ReadString()));
+            }
+
+            if (entries.Count > 0 && id.CompareTo(entries[^1].Id) <= 0)
+            {
+                throw new InvalidDataException($"Stream '{key}' has entries out of ID order.");
+            }
+
+            entries.Add(new StreamEntry(id, fields));
+        }
+
+        long groupCount = reader.ReadLength();
+        var groups = new List<StreamGroupSnapshot>((int)Math.Min(groupCount, 1024));
+        for (long g = 0; g < groupCount; g++)
+        {
+            string name = reader.ReadString();
+            StreamId lastDelivered = reader.ReadStreamId();
+
+            long consumerCount = reader.ReadLength();
+            var consumers = new List<StreamConsumerSnapshot>((int)Math.Min(consumerCount, 1024));
+            for (long c = 0; c < consumerCount; c++)
+            {
+                string consumer = reader.ReadString();
+                consumers.Add(new StreamConsumerSnapshot(consumer, reader.ReadInt64LittleEndian()));
+            }
+
+            long pendingCount = reader.ReadLength();
+            var pending = new List<StreamPendingSnapshot>((int)Math.Min(pendingCount, 1024));
+            for (long p = 0; p < pendingCount; p++)
+            {
+                StreamId id = reader.ReadStreamId();
+                string owner = reader.ReadString();
+                long deliveryTime = reader.ReadInt64LittleEndian();
+                pending.Add(new StreamPendingSnapshot(id, owner, deliveryTime, reader.ReadInt64LittleEndian()));
+            }
+
+            groups.Add(new StreamGroupSnapshot(name, lastDelivered, consumers, pending));
+        }
+
+        return new StreamSnapshot(entries, groups);
     }
 
     private static void VerifyChecksum(ReadOnlySpan<byte> data, int checksumOffset, int version)
@@ -241,6 +309,12 @@ public static class RdbReader
         }
 
         public long ReadInt64LittleEndian() => BinaryPrimitives.ReadInt64LittleEndian(ReadBytes(8));
+
+        public StreamId ReadStreamId()
+        {
+            ReadOnlySpan<byte> bytes = ReadBytes(16);
+            return new StreamId(BinaryPrimitives.ReadUInt64LittleEndian(bytes), BinaryPrimitives.ReadUInt64LittleEndian(bytes[8..]));
+        }
 
         public int ReadInt32LittleEndian() => BinaryPrimitives.ReadInt32LittleEndian(ReadBytes(4));
 
