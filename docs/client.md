@@ -51,14 +51,15 @@ public sealed class CartService(RedisClient redis)
 | Area | Methods |
 |---|---|
 | Server | `PingAsync`, `EchoAsync`, `InfoAsync`, `DbSizeAsync`, `FlushDbAsync`, `ConfigGetAsync` |
-| Keys | `DeleteAsync`, `ExistsAsync`, `ExpireAsync`, `PersistAsync`, `TimeToLiveAsync`, `TypeAsync`, `KeysAsync`, `ScanAsync` |
-| Strings | `GetAsync`, `SetAsync` (optionally with expiry), `SetIfNotExistsAsync`, `MGetAsync`, `MSetAsync`, `MSetIfNotExistsAsync`, `StrLenAsync`, `IncrementAsync`, `DecrementAsync`, `IncrementByAsync`, `DecrementByAsync` |
-| Lists | `LPushAsync`, `RPushAsync`, `LPopAsync` (single or count), `RPopAsync`, `BLPopAsync`, `LLenAsync`, `LRangeAsync` |
+| Keys | `DeleteAsync`, `UnlinkAsync`, `ExistsAsync`, `RenameAsync`, `RenameIfNotExistsAsync`, `ExpireAsync`, `PersistAsync`, `TimeToLiveAsync`, `TypeAsync`, `KeysAsync`, `ScanAsync` |
+| Strings | `GetAsync`, `SetAsync` (optionally with expiry), `SetIfNotExistsAsync`, `MGetAsync`, `MSetAsync`, `MSetIfNotExistsAsync`, `StrLenAsync`, `IncrementAsync`, `DecrementAsync`, `IncrementByAsync`, `DecrementByAsync`, `IncrementByFloatAsync` |
+| Lists | `LPushAsync`, `RPushAsync`, `LPushIfExistsAsync`, `RPushIfExistsAsync`, `LPopAsync` (single or count), `RPopAsync`, `BLPopAsync`, `LLenAsync`, `LRangeAsync`, `LIndexAsync`, `LSetAsync`, `LInsertAsync`, `LRemAsync`, `LTrimAsync`, `LPosAsync`, `LMoveAsync`, `BLMoveAsync` |
 | Hashes | `HSetAsync` (one field or many), `HSetIfNotExistsAsync`, `HGetAsync`, `HMGetAsync`, `HGetAllAsync`, `HKeysAsync`, `HValsAsync`, `HDelAsync`, `HExistsAsync`, `HLenAsync`, `HIncrByAsync`, `HIncrByFloatAsync` |
 | Sets | `SAddAsync`, `SRemAsync`, `SIsMemberAsync`, `SMembersAsync`, `SCardAsync`, `SPopAsync`, `SMoveAsync`, `SInterAsync`, `SUnionAsync`, `SDiffAsync` |
 | Sorted sets | `ZAddAsync` (one member or many), `ZIncrByAsync`, `ZScoreAsync`, `ZRankAsync`, `ZCardAsync`, `ZCountAsync`, `ZRemAsync`, `ZRangeAsync`, `ZRangeByScoreAsync`, `ZPopAsync` |
-| Streams | `XAddAsync`, `XLenAsync`, `XRangeAsync` |
-| Pub/Sub | `PublishAsync`, `SubscribeAsync` |
+| Streams | `XAddAsync`, `XLenAsync`, `XRangeAsync`, `XReadAsync` |
+| Consumer groups | `XGroupCreateAsync`, `XGroupDestroyAsync`, `XGroupSetIdAsync`, `XGroupCreateConsumerAsync`, `XGroupDeleteConsumerAsync`, `XReadGroupAsync`, `XAckAsync`, `XPendingAsync` (summary or entries), `XClaimAsync`, `XAutoClaimAsync` |
+| Pub/Sub | `PublishAsync`, `SubscribeAsync`, `PSubscribeAsync` |
 | Transactions | `ExecuteTransactionAsync` (plain, or optimistic with `WATCH`) |
 | Anything else | `ExecuteAsync(params string[])` returns the raw `RespValue` |
 
@@ -76,8 +77,7 @@ RespValue raw = await client.ExecuteAsync("LRANGE", "jobs", "0", "-1");
 List<string?> items = raw.AsStringList();
 ```
 
-Consumer groups (`XGROUP`, `XREADGROUP`, `XACK`, ...) and the less common commands have no
-typed method yet; use `ExecuteAsync`.
+Less common commands have no typed method; use `ExecuteAsync`.
 
 ## Hashes, sets and sorted sets
 
@@ -128,6 +128,16 @@ var next = await client.BLPopAsync(["jobs"], timeout: null, cancellationToken: s
 A blocking call holds a pooled connection for as long as it waits. Size `PoolSize` for the
 number of concurrent waiters plus normal traffic.
 
+`BLMoveAsync` is the reliable-queue version: it moves the job onto a "processing" list in
+the same atomic step, so a worker that crashes mid-job leaves it there to be recovered,
+instead of losing it.
+
+```csharp
+string? job = await client.BLMoveAsync("jobs", "jobs:processing", fromLeft: true, toLeft: false, timeout: null, stoppingToken);
+// ... process it ...
+await client.LRemAsync("jobs:processing", 1, job!);
+```
+
 ## Streams
 
 ```csharp
@@ -138,6 +148,36 @@ foreach (RedisStreamEntry entry in await client.XRangeAsync("orders", start: "-"
     Console.WriteLine($"{entry.Id}: {string.Join(", ", entry.Fields.Select(f => $"{f.Key}={f.Value}"))}");
 }
 ```
+
+### Consumer groups
+
+A consumer group splits a stream between workers and tracks what each one has not yet
+acknowledged:
+
+```csharp
+await client.XGroupCreateAsync("orders", "billing", id: "$", makeStream: true);
+
+// In each worker: wait up to 5 s for new entries, handle them, then acknowledge.
+List<RedisStreamEntry> batch = await client.XReadGroupAsync(
+    "orders", "billing", consumer: Environment.MachineName, count: 10, block: TimeSpan.FromSeconds(5));
+foreach (RedisStreamEntry entry in batch)
+{
+    // ... handle entry ...
+    await client.XAckAsync("orders", "billing", entry.Id);
+}
+
+// Recover entries a crashed worker left unacknowledged for over a minute.
+RedisAutoClaimResult claimed = await client.XAutoClaimAsync(
+    "orders", "billing", consumer: Environment.MachineName, minIdle: TimeSpan.FromMinutes(1));
+
+RedisPendingSummary pending = await client.XPendingAsync("orders", "billing");
+```
+
+`XReadGroupAsync` has two forms: one stream and its new entries (above), or several streams
+with an ID each (`>` for new entries, or an ID to re-read the consumer's own pending
+entries), which returns one `RedisStreamRead` per stream. `XReadAsync` reads without a group.
+For `block`, `null` doesn't wait and `TimeSpan.Zero` waits forever; a read that times out
+returns an empty list.
 
 ## Pub/Sub
 
@@ -158,6 +198,18 @@ _ = Task.Run(async () =>
 
 await subscriber.SubscribeAsync("refunds");   // add channels later
 await subscriber.UnsubscribeAsync("payments"); // or remove them
+```
+
+`PSubscribeAsync` subscribes to glob patterns instead. Messages then carry the pattern
+they matched in `RedisMessage.Pattern` (`null` for channel subscriptions), and the
+subscriber's `PSubscribeAsync`/`PUnsubscribeAsync` add and remove patterns later:
+
+```csharp
+await using RedisSubscriber events = await client.PSubscribeAsync("orders.*");
+await foreach (RedisMessage message in events.Messages(stoppingToken))
+{
+    Console.WriteLine($"[{message.Pattern} → {message.Channel}] {message.Message}");
+}
 ```
 
 Disposing the subscriber closes its connection, which ends every subscription.

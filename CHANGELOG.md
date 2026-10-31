@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Lists**: `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LTRIM`, `LPOS` (with `RANK`, `COUNT`,
+  `MAXLEN`), `LPUSHX`, `RPUSHX`, `LMOVE`, `RPOPLPUSH`, and the blocking `BLMOVE` and
+  `BRPOPLPUSH`. Moves are replicated as `LMOVE` and wake clients blocked on the destination.
+- **Keys and strings**: `RENAME`, `RENAMENX`, `UNLINK`, and `INCRBYFLOAT` (replicated as
+  `SET ... KEEPTTL` with the result).
+- **Pattern subscriptions**: `PSUBSCRIBE`, `PUNSUBSCRIBE` (`pmessage` pushes), and
+  `PUBSUB CHANNELS`/`NUMSUB`/`NUMPAT`. `INFO` reports `pubsub_patterns`.
+- **Memory limit and eviction**: `--maxmemory`, `--maxmemory-policy` (`noeviction`,
+  `allkeys-lru`, `volatile-lru`, `allkeys-random`, `volatile-random`, `volatile-ttl`) and
+  `--maxmemory-samples` (also `Memory` in the JSON file). Writes over the limit evict sampled
+  keys, replicated as `DEL`, or fail with `OOM`. `INFO` gains `Memory` (`used_memory`,
+  `maxmemory`, `maxmemory_policy`) and `Stats` (`evicted_keys`) sections; `CONFIG GET` reports
+  the settings; new metrics `cinnabar_memory_used_bytes` and `cinnabar_evicted_keys_total`.
+- **Streams are persisted.** RDB snapshots now include streams with their consumer groups
+  (pending entries, consumers, last delivered IDs), so streams survive restarts and reach
+  replicas on full sync.
+- Client: typed consumer-group methods (`XGroupCreateAsync`, `XReadGroupAsync`, `XAckAsync`,
+  `XPendingAsync`, `XClaimAsync`, `XAutoClaimAsync`, ...), `XReadAsync`, `PSubscribeAsync`
+  (with `RedisMessage.Pattern`), and methods for the new list, key and string commands.
+
 - **Hashes**: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HDEL`,
   `HEXISTS`, `HLEN`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`, `HSCAN`.
 - **Sets**: `SADD`, `SREM`, `SISMEMBER`, `SMISMEMBER`, `SMEMBERS`, `SCARD`, `SPOP`,
@@ -49,6 +69,12 @@
   `XCLAIM ... TIME ... FORCE LASTID`.
 
 ### Breaking changes
+
+- `Cinnabar.Storage`: a stream's `KeySnapshot.Value` is now a `StreamSnapshot` (entries and
+  consumer groups) rather than a list of `StreamEntry`; `Keyspace.Load` still accepts the old
+  form. `RdbWriter` writes streams (RDB value type 200) instead of skipping them, so files
+  that contain streams no longer load in Redis.
+- `Cinnabar.Client`: `RedisMessage` gained an optional third parameter, `Pattern`.
 
 - `Cinnabar.Protocol`: `RespEncoder.SimpleString`, `Error`, `BulkString(string)`,
   `BulkStringArray` and `Encode` take an optional `Encoding`; this is source-compatible but

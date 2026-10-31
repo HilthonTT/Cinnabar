@@ -50,7 +50,9 @@ transactions, blocking commands, replication and persistence.
    not allowed in subscribed mode → *queue it* if the session is inside `MULTI` →
    write on a replica (`READONLY`).
 5. **Execute.** The handler runs while holding the transaction gate in shared mode (see
-   [Transactions](#transactions-and-watch)). A `StorageException` (for example `WRONGTYPE`)
+   [Transactions](#transactions-and-watch)). Before a write on a master with `maxmemory`
+   set, the dispatcher evicts keys or refuses the write with `OOM` (see
+   [Memory limit and eviction](#memory-limit-and-eviction)). A `StorageException` (for example `WRONGTYPE`)
    becomes an error reply; any other exception becomes `-ERR ...` and is logged without
    killing the connection.
 6. **Propagate.** On a master, a successful write is sent to every replica (see below),
@@ -77,11 +79,12 @@ a command means adding one class. The attribute's `Flags` drive the dispatcher:
 | Flag | Meaning |
 |---|---|
 | `Write` | Rejected on replicas; propagated to replicas on a master. |
-| `Blocking` | May wait (BLPOP, XREAD BLOCK, XREADGROUP BLOCK, WAIT). Takes the transaction gate itself, only while it looks at data. Blocking writes propagate their own effect. |
+| `Blocking` | May wait (BLPOP, BLMOVE, XREAD BLOCK, XREADGROUP BLOCK, WAIT). Takes the transaction gate itself, only while it looks at data. Blocking writes propagate their own effect. |
 | `PubSub` | Allowed in subscribed mode. |
 | `NoAuth` | Allowed before `AUTH`. |
 | `Transaction` | Runs immediately inside `MULTI` instead of being queued (MULTI, EXEC, DISCARD, WATCH), and without the transaction gate. |
 | `NoGate` | Runs without the transaction gate because it is long-running and needs no isolation (PSYNC). |
+| `FreesMemory` | A write that only removes data (DEL, LPOP, LTRIM, ...), so it still runs when memory is over `maxmemory` and nothing can be evicted. |
 
 A handler can change what is replicated with `Reply.WithPropagation(...)`, so replicas store
 identical data instead of re-running time-, ID- or randomness-dependent logic:
@@ -92,11 +95,13 @@ identical data instead of re-running time-, ID- or randomness-dependent logic:
 | `SET ... EX/PX` | `SET ... PXAT` with an absolute time |
 | `SPOP` | `SREM` of the members actually removed |
 | `HINCRBYFLOAT` | `HSET` with the resulting value |
+| `INCRBYFLOAT` | `SET key <result> KEEPTTL` |
+| `RPOPLPUSH`, `BLMOVE`, `BRPOPLPUSH` | `LMOVE` with explicit directions |
 | `XGROUP CREATE ... $` | `XGROUP CREATE` with the resolved ID |
 | `XREADGROUP`, `XCLAIM`, `XAUTOCLAIM` | `XCLAIM key group consumer 0 <ids> TIME <ms> ... FORCE LASTID <id>` |
 
 Writes that change nothing (`SADD` of an existing member, `DEL` of a missing key) are not
-replicated at all.
+replicated at all. Keys evicted to stay under `maxmemory` are replicated as `DEL`.
 
 ## Binary safety
 
@@ -162,6 +167,15 @@ incremental hash-table walk is amortised O(1).
 so tests can move a fake clock instead of sleeping. Expired keys are invisible immediately
 (every read checks), and are removed lazily on access and by a sweep once a second.
 
+**Memory accounting.** Each entry caches an estimate of its size, and the keyspace keeps
+the running total (`MemoryUsage`, reported as `used_memory`). Every change to a key already
+goes through `Store`, `Touch` or `Remove` (they maintain the `WATCH` versions), so those three
+also re-estimate the entry and adjust the total. The estimate is O(1): a string is two bytes
+per char plus object overhead; a collection is its count times a per-element cost derived
+from a few sampled elements (the first and last list nodes, the first few hash fields or set
+members, the newest stream entry). It tracks growth and shrinkage without walking a big
+collection on every write, at the price of being an estimate.
+
 **Streams** (`StreamLog`) keep entries in a list sorted by `StreamId`, so ranges use a binary
 search. `XADD *` uses `max(now, last-ms)` so IDs keep increasing even if the system clock
 moves backwards. Each consumer group holds its last delivered ID, a pending entries list
@@ -185,7 +199,7 @@ reader/writer gate:
 
 Commands that wait must not hold the gate while waiting, or one client blocked in
 `BLPOP queue 0` would stall every `EXEC`, and with it every command queued behind that `EXEC`.
-So `BLPOP`, `BRPOP`, `XREAD` and `XREADGROUP` take the gate only for each attempt to read,
+So `BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, `XREAD` and `XREADGROUP` take the gate only for each attempt to read,
 and wait outside it. `PSYNC` skips the gate entirely: a full sync can take a long time, and
 a snapshot taken mid-transaction is completed by the transaction's remaining writes, which
 follow in the replication stream. Snapshots for `BGSAVE`, periodic and shutdown saves copy
@@ -197,7 +211,7 @@ stripes, so the three can't deadlock. The gate and the barrier share one impleme
 
 ## Blocking commands
 
-`BLPOP`, `BRPOP`, `XREAD BLOCK` and `XREADGROUP BLOCK` use `KeyNotifier`. The order of
+`BLPOP`, `BRPOP`, `BLMOVE`, `BRPOPLPUSH`, `XREAD BLOCK` and `XREADGROUP BLOCK` use `KeyNotifier`. The order of
 operations is what makes them correct:
 
 1. **Register** interest in the keys.
@@ -215,10 +229,34 @@ removed, so it can't swallow a later push.
 
 Inside `EXEC`, blocking commands don't block, as in Redis.
 
+## Memory limit and eviction
+
+With `maxmemory` set, the dispatcher checks `Keyspace.MemoryUsage` before every write on a
+master, while it holds the gate and the replication barrier. Over the limit, it calls
+`Keyspace.Evict`, which works like Redis's approximate eviction:
+
+1. Pick `maxmemory-samples` random keys. A `ConcurrentDictionary` cannot return a random
+   key, so the keyspace also keeps a `SampledKeySet`: the keys in a dense array plus a
+   key → index map, updated when keys are created and deleted (under the key's stripe, with
+   its own lock taken after the stripe). Removal swaps the last key into the hole.
+2. Choose the best candidate: the oldest last-access time for `*-lru` (every lookup records
+   the time; saving a snapshot doesn't), the earliest expiry for `volatile-ttl`, any key for
+   `*-random`. `volatile-*` policies skip keys without a TTL.
+3. Remove it under its stripe (re-checking it still qualifies), and repeat until under the
+   limit. A volatile policy that keeps sampling only persistent keys gives up after a few
+   rounds.
+
+Each evicted key is propagated as `DEL`, so replicas, which never evict on their own, stay
+identical. If memory is still over the limit, the write is refused with `OOM` unless its
+command is flagged `FreesMemory`. Eviction counts as a change for `WATCH`.
+
 ## Pub/Sub
 
-`PubSubBroker` maps channels to subscribed sessions. `PUBLISH` encodes the
-`["message", channel, payload]` push once and queues it on each subscriber's session.
+`PubSubBroker` maps channels, and glob patterns (`PSUBSCRIBE`), to subscribed sessions.
+`PUBLISH` finds the channel's subscribers and every pattern matching the channel (a linear
+scan of the patterns, as in Redis), then encodes the `["message", channel, payload]` and
+`["pmessage", pattern, channel, payload]` pushes once each and queues them on each
+subscriber's session.
 Each session drains its queue on a background loop, so a slow subscriber never blocks the
 publisher. All writes to a socket (replies, pushes, replication traffic) go through
 `ClientSession.SendAsync`, which serialises them so frames never interleave.
@@ -269,8 +307,13 @@ reconnects with exponential back-off (up to 5 s) if the link drops.
   half-written snapshot.
 - **Format.** RDB version 9 with a CRC-64/Jones checksum. Strings are type 0; lists, sets,
   hashes and sorted sets use the plain encodings (types 1, 2, 4 and 5, with scores as binary
-  doubles), which Redis can still load. Strings are written byte for byte. Streams are
-  skipped, with a warning. The reader also understands integer-encoded and LZF-compressed
+  doubles), which Redis can still load. Strings are written byte for byte. Streams use a
+  Cinnabar-specific value type (200, which Redis doesn't use, so Redis rejects the file
+  instead of misreading it): a layout version byte, the entries (16-byte ID, then
+  field/value pairs), then each consumer group's name, last delivered ID, consumers (name,
+  seen time) and pending entries (ID, owner, delivery time, delivery count). Because a full
+  sync to a replica is an RDB transfer, streams and their groups reach replicas too. The
+  reader also understands integer-encoded and LZF-compressed
   strings and the older text-score sorted sets (type 3), but not the compact encodings
   (listpacks, intsets, quicklists) that real Redis writes for small collections, so it loads
   real dumps only if they contain strings and large collections.
@@ -292,5 +335,5 @@ reconnects with exponential back-off (up to 5 s) if the link drops.
   costs nothing at the default `Information` level.
 - Prometheus metrics on `--metrics-port` (default 9090): connections, rejected connections,
   commands by name and outcome, latency histogram, rate-limited commands, key count,
-  connected replicas and replication offset.
-- `INFO` reports server, client, persistence, replication and keyspace sections.
+  connected replicas, replication offset, estimated data size and evicted keys.
+- `INFO` reports server, client, memory, stats, persistence, replication and keyspace sections.

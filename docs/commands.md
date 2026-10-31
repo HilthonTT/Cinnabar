@@ -1,6 +1,6 @@
 # Command reference
 
-Cinnabar implements 120 commands. Names are case-insensitive. Behaviour follows Redis unless
+Cinnabar implements 139 commands. Names are case-insensitive. Behaviour follows Redis unless
 a **Note** says otherwise. Run `COMMAND` against a server to list what it supports.
 
 Legend: ✍️ write command (rejected on replicas, propagated to replicas) · ⏳ may block.
@@ -36,14 +36,20 @@ stored and returned exactly, and lengths (`STRLEN`, `HSTRLEN`) count bytes.
 | `DECR` ✍️ | `DECR key` | New value. |
 | `INCRBY` ✍️ | `INCRBY key increment` | New value. Overflow → `ERR increment or decrement would overflow`. |
 | `DECRBY` ✍️ | `DECRBY key decrement` | New value. |
+| `INCRBYFLOAT` ✍️ | `INCRBYFLOAT key increment` | New value as a bulk string, such as `10.6`. A missing key starts at 0. Keeps the key's TTL. |
 
 **Notes.** `SET ... GET` is not supported. An `EXAT`/`PXAT` time in the past deletes the key.
+`INCRBYFLOAT` is replicated as `SET key <result> KEEPTTL`, so replicas store exactly the
+master's value.
 
 ## Keys
 
 | Command | Syntax | Reply |
 |---|---|---|
 | `DEL` ✍️ | `DEL key [key ...]` | Number of keys removed. |
+| `UNLINK` ✍️ | `UNLINK key [key ...]` | Same as `DEL`. (Redis frees the memory in the background; the .NET garbage collector already does.) |
+| `RENAME` ✍️ | `RENAME key newkey` | `OK`. Moves the value and TTL to `newkey`, replacing whatever was there. `ERR no such key` if `key` doesn't exist. |
+| `RENAMENX` ✍️ | `RENAMENX key newkey` | `1` if renamed, `0` if `newkey` already exists. |
 | `EXISTS` | `EXISTS key [key ...]` | How many of the keys exist; a key listed twice counts twice. |
 | `TYPE` | `TYPE key` | `string`, `list`, `stream`, `hash`, `set`, `zset` or `none`. |
 | `KEYS` | `KEYS pattern` | Matching keys, sorted. Glob syntax: `*`, `?`, `[abc]`, `[^a]`, `[a-z]`, `\x` escapes. |
@@ -74,13 +80,27 @@ its O(n) work. `HSCAN`, `SSCAN` and `ZSCAN` work the same way on a single key.
 | `RPUSH` ✍️ | `RPUSH key element [element ...]` | New length. |
 | `LPOP` ✍️ | `LPOP key [count]` | Without `count`: the element or nil. With `count`: an array, or a null array if the key does not exist. |
 | `RPOP` ✍️ | `RPOP key [count]` | As `LPOP`, from the tail. |
+| `LPUSHX` ✍️ | `LPUSHX key element [element ...]` | As `LPUSH`, but only if the list exists; `0` otherwise. |
+| `RPUSHX` ✍️ | `RPUSHX key element [element ...]` | As `RPUSH`, but only if the list exists; `0` otherwise. |
 | `LLEN` | `LLEN key` | Length; `0` if missing. |
 | `LRANGE` | `LRANGE key start stop` | Elements from `start` to `stop` inclusive. Negative indexes count from the end; out-of-range indexes are clamped. |
+| `LINDEX` | `LINDEX key index` | The element at `index` (negative counts from the end), or nil. |
+| `LSET` ✍️ | `LSET key index element` | `OK`; `ERR no such key` or `ERR index out of range`. |
+| `LINSERT` ✍️ | `LINSERT key BEFORE \| AFTER pivot element` | New length; `-1` if `pivot` isn't in the list; `0` if the key doesn't exist. Uses the first element equal to `pivot`. |
+| `LREM` ✍️ | `LREM key count element` | Number removed. `count > 0` removes the first `count` matches from the head, `count < 0` from the tail, `0` all of them. |
+| `LTRIM` ✍️ | `LTRIM key start stop` | `OK`. Keeps only the range, with `LRANGE`'s index rules. |
+| `LPOS` | `LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]` | Index of the first match, or nil. `RANK 2` starts from the second match, `RANK -1` searches from the tail. With `COUNT` (`0` = all), an array of indexes. `MAXLEN` compares at most that many elements. |
+| `LMOVE` ✍️ | `LMOVE source destination LEFT \| RIGHT LEFT \| RIGHT` | The element popped from one end of `source` and pushed onto one end of `destination`, atomically; nil if `source` is empty. The two keys may be the same (rotation). |
+| `RPOPLPUSH` ✍️ | `RPOPLPUSH source destination` | Same as `LMOVE source destination RIGHT LEFT`. |
 | `BLPOP` ✍️⏳ | `BLPOP key [key ...] timeout` | `[key, element]` from the first non-empty list, or a null array after `timeout` seconds (decimals allowed; `0` waits forever). |
 | `BRPOP` ✍️⏳ | `BRPOP key [key ...] timeout` | As `BLPOP`, from the tail. |
+| `BLMOVE` ✍️⏳ | `BLMOVE source destination LEFT \| RIGHT LEFT \| RIGHT timeout` | As `LMOVE`, waiting up to `timeout` seconds for `source` to get an element; nil on timeout. |
+| `BRPOPLPUSH` ✍️⏳ | `BRPOPLPUSH source destination timeout` | Same as `BLMOVE source destination RIGHT LEFT timeout`. |
 
 A list that becomes empty is deleted. A blocked client that disconnects stops waiting
-within about 100 ms. Inside `EXEC`, `BLPOP`/`BRPOP` never block.
+within about 100 ms. Inside `EXEC`, blocking list commands never block. Every list move is
+replicated as `LMOVE`, and a move wakes clients blocked on the destination. Index-based
+commands walk the linked list from the nearer end, so they cost O(n) like Redis's.
 
 ## Hashes
 
@@ -199,7 +219,8 @@ rank ranges cost O(rank) rather than Redis's O(log n). `ZUNIONSTORE`, `ZINTERSTO
 commands that name the exact entries delivered or claimed (and `XGROUP SETID` for `NOACK`),
 so replicas end up with the same pending entries without depending on their own clock.
 `ENTRIESREAD` is accepted and ignored. `XINFO`, `XREVRANGE`, `XDEL` and `XTRIM` are not
-implemented. Streams, and so their consumer groups, are not written to RDB snapshots.
+implemented. Streams are written to RDB snapshots with their consumer groups, and so reach
+replicas on a full sync.
 
 ## Pub/Sub
 
@@ -207,11 +228,16 @@ implemented. Streams, and so their consumer groups, are not written to RDB snaps
 |---|---|---|
 | `SUBSCRIBE` | `SUBSCRIBE channel [channel ...]` | One `["subscribe", channel, count]` push per channel. Messages then arrive as `["message", channel, payload]`. |
 | `UNSUBSCRIBE` | `UNSUBSCRIBE [channel ...]` | One `["unsubscribe", channel, remaining]` push per channel; with no channels, leaves all of them. |
-| `PUBLISH` | `PUBLISH channel message` | Number of subscribers that received the message. |
+| `PSUBSCRIBE` | `PSUBSCRIBE pattern [pattern ...]` | One `["psubscribe", pattern, count]` push per pattern. Messages on matching channels then arrive as `["pmessage", pattern, channel, payload]`. Patterns use the `KEYS` glob syntax. |
+| `PUNSUBSCRIBE` | `PUNSUBSCRIBE [pattern ...]` | One `["punsubscribe", pattern, remaining]` push per pattern (matched literally); with none, leaves all patterns. |
+| `PUBLISH` | `PUBLISH channel message` | Number of deliveries: channel subscribers plus matching pattern subscriptions. |
+| `PUBSUB` | `PUBSUB CHANNELS [pattern] \| NUMSUB [channel ...] \| NUMPAT` | Channels with subscribers (optionally matching a glob); `[channel, count, ...]` subscriber counts (pattern subscriptions not included); the number of patterns with subscribers. |
 
-While subscribed, a connection may only send `SUBSCRIBE`, `UNSUBSCRIBE`, `PING` (which then
-replies `["pong", message]`) and `QUIT`. Pattern subscriptions (`PSUBSCRIBE`) are not
-implemented, and `PUBLISH` is not replicated.
+The `count` and `remaining` in confirmations count channels and patterns together. While it
+has any subscription, a connection may only send `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`,
+`PUNSUBSCRIBE`, `PING` (which then replies `["pong", message]`) and `QUIT`. A connection
+subscribed to a channel and to a pattern that matches it receives each message twice, as in
+Redis. `PUBLISH` is not replicated, and sharded pub/sub (`SSUBSCRIBE`) is not implemented.
 
 ## Transactions
 
@@ -244,8 +270,8 @@ write is replicated as its own command, so a replica can briefly show part of a 
 
 | Command | Syntax | Reply |
 |---|---|---|
-| `CONFIG` | `CONFIG GET pattern [pattern ...]` | Matching name/value pairs: `bind`, `port`, `dir`, `dbfilename`, `requirepass`, `masterauth`, `replicaof`, `maxclients`, `save`, `appendonly`, `databases`. `CONFIG SET` is not supported. |
-| `INFO` | `INFO [section]` | Text with `Server`, `Clients`, `Persistence`, `Replication` and `Keyspace` sections. |
+| `CONFIG` | `CONFIG GET pattern [pattern ...]` | Matching name/value pairs: `bind`, `port`, `dir`, `dbfilename`, `requirepass`, `masterauth`, `replicaof`, `maxclients`, `save`, `maxmemory`, `maxmemory-policy`, `maxmemory-samples`, `appendonly`, `databases`. `CONFIG SET` is not supported. |
+| `INFO` | `INFO [section]` | Text with `Server`, `Clients`, `Memory`, `Stats`, `Persistence`, `Replication` and `Keyspace` sections. |
 | `COMMAND` | `COMMAND [COUNT \| DOCS \| INFO ...]` | Command names; `COUNT` returns how many. |
 | `DBSIZE` | `DBSIZE` | Number of keys. |
 | `FLUSHDB` ✍️ | `FLUSHDB [ASYNC \| SYNC]` | `OK`; deletes every key. |
@@ -274,3 +300,4 @@ write is replicated as its own command, so a replica can briefly show part of a 
 | `EXECABORT` | `EXEC` after a command was rejected while queueing. |
 | `BUSYGROUP` | `XGROUP CREATE` for a group that already exists. |
 | `NOGROUP` | A consumer-group command named a stream or group that doesn't exist. |
+| `OOM` | A write arrived while the data was over `maxmemory` and nothing could be evicted (see [configuration](configuration.md#memory-limit-and-eviction)). |

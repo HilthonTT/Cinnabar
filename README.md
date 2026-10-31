@@ -17,8 +17,9 @@
 
 Cinnabar speaks RESP2, the Redis wire protocol, so `redis-cli` and existing Redis client
 libraries can talk to it. It implements strings, lists, hashes, sets, sorted sets, streams
-with consumer groups, pub/sub, isolated transactions with `WATCH`, `SCAN`, key expiry,
-master–replica replication and RDB snapshots, and it is binary-safe. It is a learning project that
+with consumer groups, pub/sub with pattern subscriptions, isolated transactions with `WATCH`,
+`SCAN`, key expiry, `maxmemory` with LRU eviction, master–replica replication and RDB
+snapshots, and it is binary-safe. It is a learning project that
 takes protocol parsing, concurrency, replication and persistence seriously, not a drop-in
 production replacement for Redis. See [Limitations](#limitations).
 
@@ -56,6 +57,7 @@ Common options (`--help` lists them all; see [docs/configuration.md](docs/config
 dotnet run --project src/Cinnabar.Server -- --port 6380 --requirepass s3cret
 dotnet run --project src/Cinnabar.Server -- --dir ./data --save-interval 60
 dotnet run --project src/Cinnabar.Server -- --port 6380 --replicaof localhost 6379
+dotnet run --project src/Cinnabar.Server -- --maxmemory 256mb --maxmemory-policy allkeys-lru
 dotnet run --project src/Cinnabar.Server -- --config cinnabar.json
 ```
 
@@ -69,14 +71,15 @@ docker compose up --build
 
 | Area | What you get |
 |------|--------------|
-| **Data types** | Strings (`GET`, `SET` with `NX`/`XX`/`EX`/`PX`/`EXAT`/`PXAT`/`KEEPTTL`, `MGET`/`MSET`, `INCR`…), lists (`LPUSH`, `RPOP`, `LRANGE`, blocking `BLPOP`/`BRPOP`…), hashes (`HSET`, `HGETALL`, `HINCRBY`…), sets (`SADD`, `SINTER`, `SMOVE`, `SUNIONSTORE`…), sorted sets (`ZADD` with `NX`/`XX`/`GT`/`LT`/`CH`/`INCR`, `ZRANGE` by rank, score or lex, `ZRANK`, `ZPOPMIN`…), streams (`XADD`, `XRANGE`, blocking `XREAD`) |
+| **Data types** | Strings (`GET`, `SET` with `NX`/`XX`/`EX`/`PX`/`EXAT`/`PXAT`/`KEEPTTL`, `MGET`/`MSET`, `INCR`, `INCRBYFLOAT`…), lists (`LPUSH`, `RPOP`, `LRANGE`, `LINDEX`, `LSET`, `LINSERT`, `LREM`, `LTRIM`, `LPOS`, `LMOVE`, blocking `BLPOP`/`BRPOP`/`BLMOVE`…), hashes (`HSET`, `HGETALL`, `HINCRBY`…), sets (`SADD`, `SINTER`, `SMOVE`, `SUNIONSTORE`…), sorted sets (`ZADD` with `NX`/`XX`/`GT`/`LT`/`CH`/`INCR`, `ZRANGE` by rank, score or lex, `ZRANK`, `ZPOPMIN`…), streams (`XADD`, `XRANGE`, blocking `XREAD`) |
 | **Consumer groups** | `XGROUP`, blocking `XREADGROUP`, `XACK`, `XPENDING`, `XCLAIM`, `XAUTOCLAIM` |
 | **Binary safety** | Keys, values, fields and members are stored byte for byte, including invalid UTF-8 |
-| **Keys** | `DEL`, `EXISTS`, `TYPE`, `KEYS` with glob patterns, `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` cursors, `EXPIRE`/`PEXPIRE`/`EXPIREAT`/`PEXPIREAT`, `PERSIST`, `TTL`/`PTTL` on every type |
-| **Pub/Sub** | `SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH` with fan-out to every subscriber |
+| **Keys** | `DEL`, `UNLINK`, `EXISTS`, `TYPE`, `RENAME`/`RENAMENX`, `KEYS` with glob patterns, `SCAN`/`HSCAN`/`SSCAN`/`ZSCAN` cursors, `EXPIRE`/`PEXPIRE`/`EXPIREAT`/`PEXPIREAT`, `PERSIST`, `TTL`/`PTTL` on every type |
+| **Pub/Sub** | `SUBSCRIBE`, `PSUBSCRIBE` (glob patterns), their `UNSUBSCRIBE` forms, `PUBLISH` with fan-out to every subscriber, `PUBSUB CHANNELS`/`NUMSUB`/`NUMPAT` |
 | **Transactions** | `MULTI` / `EXEC` / `DISCARD`, isolated from other clients; optimistic locking with `WATCH`/`UNWATCH`; `EXECABORT` for commands rejected while queueing |
+| **Memory limit** | `--maxmemory` with `noeviction`, `allkeys-lru`, `volatile-lru`, `allkeys-random`, `volatile-random` and `volatile-ttl` policies (sampled, like Redis); evictions replicate as `DEL` |
 | **Replication** | `--replicaof` full sync (snapshot plus command stream), read-only replicas, `WAIT`, automatic reconnect; randomised and time-dependent writes are replicated deterministically |
-| **Persistence** | RDB snapshots of strings, lists, hashes, sets and sorted sets: load on start, `SAVE`/`BGSAVE`, periodic and on-shutdown saves, atomic writes, CRC-64 check; reads LZF-compressed Redis dumps |
+| **Persistence** | RDB snapshots of every type, including streams with their consumer groups: load on start, `SAVE`/`BGSAVE`, periodic and on-shutdown saves, atomic writes, CRC-64 check; reads LZF-compressed Redis dumps |
 | **Security** | `requirepass` + `AUTH [user] pass` (constant-time comparison), per-IP and total connection limits, per-IP command rate limiting |
 | **Operations** | Prometheus metrics on `:9090/metrics`, `INFO`, `CONFIG GET`, structured console logging, graceful shutdown on Ctrl+C / SIGTERM |
 | **Client** | Pooled async .NET client, dedicated-connection pub/sub as `IAsyncEnumerable`, transactions, DI registration |
@@ -106,9 +109,12 @@ await client.SAddAsync("tags:post:7", "dotnet", "redis");
 await client.ZAddAsync("leaderboard", [new("ada", 120), new("bob", 95)]);
 List<RedisSortedSetEntry> top = await client.ZRangeAsync("leaderboard", 0, 9, descending: true);
 
-// Streams
+// Streams and consumer groups
 string id = await client.XAddAsync("events", [new("action", "click"), new("page", "/home")]);
 List<RedisStreamEntry> recent = await client.XRangeAsync("events", count: 10);
+await client.XGroupCreateAsync("events", "analytics", id: "0");
+List<RedisStreamEntry> batch = await client.XReadGroupAsync("events", "analytics", "worker-1", count: 10);
+await client.XAckAsync("events", "analytics", [.. batch.Select(e => e.Id)]);
 
 // Iterate keys without blocking the server
 await foreach (string key in client.ScanAsync("user:*")) { /* ... */ }
@@ -123,7 +129,7 @@ var outcome = await client.ExecuteTransactionAsync(["balance"], async read =>
     return [["SET", "balance", (balance - 10).ToString()]];
 });
 
-// Pub/Sub
+// Pub/Sub (PSubscribeAsync takes glob patterns instead)
 await using var subscriber = await client.SubscribeAsync("news");
 await client.PublishAsync("news", "hello");
 await foreach (var message in subscriber.Messages())
@@ -145,34 +151,6 @@ builder.Services.AddRedisClient(o => { o.Host = "cinnabar"; o.PoolSize = 20; o.P
 The client is plain RESP2, so it also works against a real Redis server. More in
 [docs/client.md](docs/client.md).
 
-## Project layout
-
-```
-Cinnabar.slnx
-├── src/
-│   ├── Cinnabar.Protocol/        RESP2 reader/encoder shared by server and client
-│   ├── Cinnabar.Storage/         Keyspace (every data type, expiry, WATCH versions, SCAN) + RDB persistence
-│   ├── Cinnabar.Server/          The server executable
-│   │   ├── Commands/             Dispatcher + one folder per command family
-│   │   ├── Concurrency/          Shared/exclusive gate behind EXEC isolation and the write barrier
-│   │   ├── Networking/           TCP listener, per-connection loop, client sessions
-│   │   ├── Replication/          Master streaming, replica link, write barrier
-│   │   ├── Persistence/          Snapshot load/save scheduling
-│   │   ├── PubSub/  Blocking/    Pub/sub broker, wake-ups for BLPOP/XREAD/XREADGROUP
-│   │   ├── Security/             Connection limits and rate limiting
-│   │   ├── Configuration/        Settings model and command-line parsing
-│   │   ├── Diagnostics/          Prometheus metrics
-│   │   └── Hosting/              CinnabarServer lifecycle and DI wiring
-│   └── Cinnabar.Client/          Pooled async client library
-├── tests/                        One test project per library, plus end-to-end integration tests
-├── samples/Cinnabar.Samples.WebApi/  Minimal API that exercises the client
-└── docs/                         Architecture, commands, configuration, client guide
-```
-
-The dependency graph is one-directional: `Server → Storage, Protocol` and
-`Client → Protocol`. Storage knows nothing about networking, which keeps it easy to test.
-[docs/architecture.md](docs/architecture.md) explains how a command flows through the server.
-
 ## Building and testing
 
 ```bash
@@ -183,18 +161,19 @@ dotnet test Cinnabar.slnx
 | Test project | Covers |
 |---|---|
 | `Cinnabar.Protocol.Tests` | RESP parsing across split reads, limits, inline commands, UTF-8 and byte-exact encoding |
-| `Cinnabar.Storage.Tests` | Keyspace semantics for every type, expiry with a fake clock, consumer groups, `WATCH` versions, `SCAN` guarantees, glob matching, RDB round trips, multi-key atomicity and concurrency |
-| `Cinnabar.Server.Tests` | Every command through the dispatcher, auth, transactions, `WATCH` and `EXEC` isolation, blocking, replication rewrites, configuration, rate limiting |
+| `Cinnabar.Storage.Tests` | Keyspace semantics for every type, expiry with a fake clock, consumer groups, `WATCH` versions, `SCAN` guarantees, glob matching, memory accounting and eviction policies, RDB round trips (including streams and groups), multi-key atomicity and concurrency |
+| `Cinnabar.Server.Tests` | Every command through the dispatcher, auth, transactions, `WATCH` and `EXEC` isolation, blocking, replication rewrites, `maxmemory` and `OOM`, configuration, rate limiting |
 | `Cinnabar.Client.Tests` | Connection strings, pooling and connection recovery against a fake server |
-| `Cinnabar.IntegrationTests` | Real server over TCP: client API, binary payloads, pipelining, pub/sub, blocking, optimistic transactions under contention, auth, replication, persistence |
+| `Cinnabar.IntegrationTests` | Real server over TCP: client API (including consumer groups and pattern subscriptions), binary payloads, pipelining, pub/sub, blocking, optimistic transactions under contention, auth, replication, persistence of every type |
 
 ## Limitations
 
 Cinnabar deliberately implements a subset of Redis:
 
-- **One database** (`SELECT 0` only), and no Lua, ACL users, cluster mode, RESP3, AOF or `maxmemory` eviction.
-- **Not every command.** Notable gaps: `XINFO`, `XDEL`, `XTRIM`, `ZUNIONSTORE`/`ZINTERSTORE`, blocking sorted-set pops, pattern subscriptions, `RENAME`, `CONFIG SET`. See the [command reference](docs/commands.md).
-- **Persistence skips streams.** Streams and their consumer groups live in memory only, and a replica's full sync doesn't include them. Real Redis dumps load only if they avoid the compact encodings (listpacks, intsets) Redis uses for small collections.
+- **One database** (`SELECT 0` only), and no Lua, ACL users, cluster mode, RESP3 or AOF.
+- **Not every command.** Notable gaps: `XINFO`, `XDEL`, `XTRIM`, `ZUNIONSTORE`/`ZINTERSTORE`, blocking sorted-set pops, sharded pub/sub, `CONFIG SET`. See the [command reference](docs/commands.md).
+- **RDB compatibility is partial.** Streams are saved in a Cinnabar-specific encoding, so a snapshot containing a stream can't be loaded by Redis. Real Redis dumps load only if they avoid the compact encodings (listpacks, intsets) Redis uses for small collections.
+- **`maxmemory` limits an estimate.** The limit applies to Cinnabar's estimate of the stored data, not to the process's memory, and the LFU policies are not supported. See [configuration](docs/configuration.md#memory-limit-and-eviction).
 - **Replication always does a full sync.** There is no partial resync backlog, and chained replicas are not supported. A transaction's writes are replicated one by one, so a replica can briefly show part of one.
 - **Some operations are slower than Redis.** `SCAN` walks the whole keyspace on each call, and sorted-set rank lookups are O(rank), not O(log n).
 

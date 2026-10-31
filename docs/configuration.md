@@ -22,11 +22,15 @@ dotnet run --project src/Cinnabar.Server -- [options]
 | `--save-interval <seconds>` | `Persistence.SaveIntervalSeconds` | `0` (off) | Save a snapshot every N seconds. |
 | `--replicaof <host> <port>` | `Replication.MasterHost`, `MasterPort` | *(master)* | Run as a read-only replica. `"host port"`, `host port` and `host:port` all work; `no one` keeps the server a master. |
 | `--masterauth <password>` | `Replication.MasterAuth` | *(none)* | Password the replica sends to its master. |
+| `--maxmemory <size>` | `Memory.MaxMemory` | `0` (no limit) | Memory limit for stored data: bytes, or a number with `kb`, `mb` or `gb` (powers of 1024; `k`, `m`, `g` are powers of 1000). See [Memory limit and eviction](#memory-limit-and-eviction). |
+| `--maxmemory-policy <policy>` | `Memory.MaxMemoryPolicy` | `noeviction` | What to do over the limit: `noeviction`, `allkeys-lru`, `volatile-lru`, `allkeys-random`, `volatile-random` or `volatile-ttl`. |
+| `--maxmemory-samples <n>` | `Memory.MaxMemorySamples` | `5` | Keys sampled per eviction. |
 | `--metrics-port <port>` | `Diagnostics.MetricsPort` | `9090` | Prometheus endpoint port. `0` disables it. |
 | `--loglevel <level>` | `Diagnostics.LogLevel` | `Information` | `Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical` or `None`. `Trace` logs every command. |
 | `--help` | – | – | Print usage and exit. |
 
-An unknown flag or an invalid value prints an error and exits with code 2.
+An unknown flag or an invalid value (including an invalid memory size or policy in the JSON
+file) prints an error and exits with code 2.
 
 ## JSON settings file
 
@@ -50,6 +54,11 @@ out anything you don't want to change. A complete example with the defaults:
     "MasterHost": null,          // set to run as a replica
     "MasterPort": 6379,
     "MasterAuth": null
+  },
+  "Memory": {
+    "MaxMemory": "0",            // e.g. "256mb"; "0" = no limit
+    "MaxMemoryPolicy": "noeviction",
+    "MaxMemorySamples": 5
   },
   "Security": {
     "RequirePass": null,
@@ -81,7 +90,35 @@ connection and rate limits.
   elsewhere.
 - Snapshots are written to `<file>.tmp` and then renamed over the target, so the previous
   snapshot survives a crash mid-write.
-- Streams are not persisted. A warning is logged when a save skips stream keys.
+- Streams are saved with their consumer groups (pending entries, consumers and last
+  delivered IDs) in a Cinnabar-specific RDB value type. A snapshot that contains a stream
+  therefore loads in Cinnabar but not in Redis; snapshots without streams remain loadable by
+  Redis.
+
+## Memory limit and eviction
+
+With `MaxMemory` above 0, every write first checks the estimated size of the stored data
+(`used_memory` in `INFO memory`) against the limit. Over the limit:
+
+- `noeviction`: the write fails with
+  `OOM command not allowed when used memory > 'maxmemory'.` Commands that only remove data
+  (`DEL`, `UNLINK`, `LPOP`, `LREM`, `LTRIM`, `SREM`, `HDEL`, `ZREM`, `EXPIRE`, `FLUSHDB`, ...)
+  and all reads still work.
+- The other policies evict keys until the data fits, then run the write. Like Redis,
+  Cinnabar samples `MaxMemorySamples` random keys per eviction and removes the best
+  candidate: the least recently used key (`*-lru`), the key that expires soonest
+  (`volatile-ttl`), or any of them (`*-random`). `volatile-*` policies only consider keys with
+  a TTL; if none can be found, the write fails with `OOM`.
+
+Evictions are replicated to replicas as `DEL`. Replicas don't evict on their own. `INFO`
+reports `used_memory`, `maxmemory`, `maxmemory_policy` and `evicted_keys`, and
+`CONFIG GET maxmemory*` shows the settings.
+
+The limit is compared with Cinnabar's *estimate* of the data's size, not the process's
+memory: strings count two bytes per character plus object overhead, and a collection's size
+is extrapolated from a few of its elements. The .NET runtime, connection buffers and garbage
+not yet collected come on top, so leave headroom when sizing a container. The LFU policies
+(`allkeys-lfu`, `volatile-lfu`) are not supported.
 
 ## Replication setup
 
@@ -124,6 +161,8 @@ With `MetricsPort` > 0, Prometheus metrics are served at `http://<host>:<port>/m
 | `cinnabar_command_duration_seconds` | histogram | `command` |
 | `cinnabar_rate_limited_total` | counter | |
 | `cinnabar_keys` | gauge | |
+| `cinnabar_memory_used_bytes` | gauge | |
+| `cinnabar_evicted_keys_total` | counter | |
 | `cinnabar_replication_connected_replicas` | gauge | |
 | `cinnabar_replication_offset_bytes` | gauge | |
 
