@@ -81,6 +81,20 @@ public sealed partial class RedisClient : IAsyncDisposable
     public async Task<bool> ExpireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["PEXPIRE", key, Format((long)ttl.TotalMilliseconds)], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
 
+    /// <summary><c>UNLINK key [key ...]</c>: like DEL; the number of keys removed.</summary>
+    public async Task<long> UnlinkAsync(params string[] keys) =>
+        (await ExecuteAsync(["UNLINK", .. keys], CancellationToken.None).ConfigureAwait(false)).AsLong();
+
+    /// <summary><c>RENAME key newkey</c>: renames a key, overwriting <paramref name="newKey"/>; keeps the TTL.</summary>
+    /// <exception cref="RedisException"><paramref name="key"/> does not exist.</exception>
+    public Task RenameAsync(string key, string newKey, CancellationToken cancellationToken = default) =>
+        ExecuteAsync(["RENAME", key, newKey], cancellationToken);
+
+    /// <summary><c>RENAMENX key newkey</c>: renames only if <paramref name="newKey"/> does not exist; <see langword="true"/> if renamed.</summary>
+    /// <exception cref="RedisException"><paramref name="key"/> does not exist.</exception>
+    public async Task<bool> RenameIfNotExistsAsync(string key, string newKey, CancellationToken cancellationToken = default) =>
+        (await ExecuteAsync(["RENAMENX", key, newKey], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
+
     /// <summary><c>PERSIST key</c>: <see langword="true"/> if a TTL was removed.</summary>
     public async Task<bool> PersistAsync(string key, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["PERSIST", key], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
@@ -202,6 +216,14 @@ public sealed partial class RedisClient : IAsyncDisposable
     /// <summary><c>DECRBY key delta</c>: the new value.</summary>
     public async Task<long> DecrementByAsync(string key, long delta, CancellationToken cancellationToken = default) =>
         (await ExecuteAsync(["DECRBY", key, Format(delta)], cancellationToken).ConfigureAwait(false)).AsLong();
+
+    /// <summary><c>INCRBYFLOAT key increment</c>: the new value (a missing key starts at 0).</summary>
+    public async Task<double> IncrementByFloatAsync(string key, double delta, CancellationToken cancellationToken = default)
+    {
+        string text = (await ExecuteAsync(["INCRBYFLOAT", key, delta.ToString("R", CultureInfo.InvariantCulture)], cancellationToken)
+            .ConfigureAwait(false)).AsString()!;
+        return double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+    }
 
     /// <summary><c>LPUSH key value [value ...]</c>: the new length.</summary>
     public async Task<long> LPushAsync(string key, params string[] values) =>

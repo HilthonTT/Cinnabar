@@ -322,6 +322,82 @@ public sealed partial class Keyspace : IDisposable
         }
     }
 
+    /// <summary>
+    /// Adds <paramref name="delta"/> to the floating-point number stored as a string at
+    /// <paramref name="key"/>, creating it from 0 if missing (<c>INCRBYFLOAT</c>). The key's TTL
+    /// is preserved.
+    /// </summary>
+    /// <returns>The new value, formatted as stored.</returns>
+    /// <exception cref="WrongTypeException">The key holds another type.</exception>
+    /// <exception cref="StorageException">The value is not a float, or the result is not finite.</exception>
+    public string IncrementByFloat(string key, double delta)
+    {
+        lock (StripeFor(key))
+        {
+            Entry? entry = GetLive(key);
+            double current = 0;
+
+            if (entry is not null)
+            {
+                if (entry.Value is not string text)
+                {
+                    throw new WrongTypeException();
+                }
+
+                if (!DoubleText.TryParse(text, out current) || double.IsInfinity(current))
+                {
+                    throw new StorageException("ERR value is not a valid float");
+                }
+            }
+
+            double result = current + delta;
+            if (!double.IsFinite(result))
+            {
+                throw new StorageException("ERR increment would produce NaN or Infinity");
+            }
+
+            string formatted = DoubleText.Format(result);
+            if (entry is null)
+            {
+                Store(key, formatted, NoExpiry);
+            }
+            else
+            {
+                entry.Value = formatted;
+                Touch(entry);
+            }
+
+            return formatted;
+        }
+    }
+
+    /// <summary>
+    /// Renames a key, keeping its value and TTL and replacing any value at
+    /// <paramref name="destination"/> (<c>RENAME</c>). With <paramref name="onlyIfNotExists"/>
+    /// (<c>RENAMENX</c>), nothing happens if the destination exists.
+    /// </summary>
+    /// <returns><see langword="false"/> if <paramref name="onlyIfNotExists"/> prevented the rename.</returns>
+    /// <exception cref="StorageException">The source key does not exist.</exception>
+    public bool Rename(string source, string destination, bool onlyIfNotExists = false)
+    {
+        using StripeSet locks = LockKeys([source, destination]);
+
+        Entry entry = GetLive(source) ?? throw new StorageException("ERR no such key");
+        if (source == destination)
+        {
+            return !onlyIfNotExists;
+        }
+
+        if (onlyIfNotExists && GetLive(destination) is not null)
+        {
+            return false;
+        }
+
+        Remove(source);
+        Store(destination, entry.Value, entry.ExpiresAtMs);
+        return true;
+    }
+
     /// <summary>Length of the string at <paramref name="key"/> in bytes, or 0 if missing.</summary>
     /// <exception cref="WrongTypeException">The key holds another type.</exception>
     public long StringLength(string key)

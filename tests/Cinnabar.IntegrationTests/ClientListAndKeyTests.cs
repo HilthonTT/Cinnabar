@@ -2,7 +2,7 @@ using Cinnabar.Client;
 
 namespace Cinnabar.IntegrationTests;
 
-/// <summary>The client's list editing methods against a real server.</summary>
+/// <summary>The client's list editing, rename and float increment methods against a real server.</summary>
 public sealed class ClientListAndKeyTests : IAsyncLifetime
 {
     private TestServer _server = null!;
@@ -58,5 +58,25 @@ public sealed class ClientListAndKeyTests : IAsyncLifetime
 
         (await moved.WithTimeout()).Should().Be("job");
         (await Client.LRangeAsync("dst")).Should().Equal("job");
+    }
+
+    [Fact]
+    public async Task Rename_Unlink_And_IncrementByFloat()
+    {
+        await Client.SetAsync("a", "1", TimeSpan.FromMinutes(5));
+
+        await Client.RenameAsync("a", "b");
+        (await Client.GetAsync("b")).Should().Be("1");
+        (await Client.TimeToLiveAsync("b")).Should().BeGreaterThan(TimeSpan.FromMinutes(4));
+
+        await Client.SetAsync("c", "x");
+        (await Client.RenameIfNotExistsAsync("b", "c")).Should().BeFalse();
+        (await Client.RenameIfNotExistsAsync("b", "d")).Should().BeTrue();
+
+        (await Client.IncrementByFloatAsync("d", 0.5)).Should().Be(1.5);
+        (await Client.UnlinkAsync("c", "d", "missing")).Should().Be(2);
+
+        Func<Task> missing = () => Client.RenameAsync("missing", "x");
+        await missing.Should().ThrowAsync<RedisException>().WithMessage("ERR no such key");
     }
 }
