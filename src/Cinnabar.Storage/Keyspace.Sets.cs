@@ -143,9 +143,16 @@ public sealed partial class Keyspace
     {
         using StripeSet locks = LockKeys([source, destination]);
 
+        // Like Redis: a missing source is 0 even if the destination has another type, but an
+        // existing source with a wrong-type destination is an error even if the member is absent.
         HashSet<string>? from = GetLive<HashSet<string>>(source);
+        if (from is null)
+        {
+            return false;
+        }
+
         HashSet<string>? to = GetLive<HashSet<string>>(destination);
-        if (from is null || !from.Contains(member))
+        if (!from.Contains(member))
         {
             return false;
         }

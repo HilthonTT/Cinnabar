@@ -4,13 +4,14 @@ using Cinnabar.Server.Persistence;
 namespace Cinnabar.Server.Commands.Server;
 
 /// <summary><c>SAVE</c>: writes the snapshot synchronously.</summary>
-[Command("SAVE", MaxArgs = 0, Group = "server")]
+[Command("SAVE", MaxArgs = 0, Flags = CommandFlags.NoGate, Group = "server")]
 internal sealed class SaveHandler(SnapshotService snapshots) : ICommandHandler
 {
     public async ValueTask<Reply> ExecuteAsync(Command command, ClientSession session, CancellationToken cancellationToken)
     {
-        // The dispatcher (or EXEC) already holds the transaction gate for this command.
-        await snapshots.SaveAsync(cancellationToken, callerHoldsGate: true);
+        // SAVE is ungated so the snapshot can take the transaction gate exclusively; inside
+        // EXEC the transaction already holds it exclusively.
+        await snapshots.SaveAsync(cancellationToken, callerHoldsGate: session.IsExecuting);
         return Reply.Ok;
     }
 }

@@ -166,7 +166,7 @@ public sealed partial class Keyspace
             Dictionary<string, string> hash = GetOrCreateHash(key, out bool created);
             long current = 0;
             if (hash.TryGetValue(field, out string? text) &&
-                !long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out current))
+                !IntegerText.TryParse(text, out current))
             {
                 throw new StorageException("ERR hash value is not an integer");
             }

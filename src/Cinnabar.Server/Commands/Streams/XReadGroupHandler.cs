@@ -57,8 +57,7 @@ internal sealed class XReadGroupHandler(
 
             if (Arguments.Is(command[cursor], "COUNT") && cursor + 1 < command.Count)
             {
-                int count = Arguments.ParseCount(command[cursor + 1]);
-                request = request with { Count = count == 0 ? null : count };
+                request = request with { Count = Arguments.ParseReadCount(command[cursor + 1]) };
             }
             else if (Arguments.Is(command[cursor], "BLOCK") && cursor + 1 < command.Count)
             {

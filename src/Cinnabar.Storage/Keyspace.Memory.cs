@@ -10,9 +10,16 @@ public sealed partial class Keyspace
     private const long SetMemberOverhead = 16;  // HashSet entry
     private const long ZSetMemberOverhead = 72; // dictionary entry + red-black tree node
     private const long StreamEntryOverhead = 64;
+    private const long GroupOverhead = 128;         // group object + dictionaries
+    private const long ConsumerOverhead = 96;       // consumer object + name + dictionary entry
+    private const long PendingEntryOverhead = 96;   // PEL node + pending entry + consumer index
     private const int SizeSamples = 3;
 
     private readonly SampledKeySet _sampledKeys = new();
+
+    // Keys with a TTL, so volatile-* policies sample only keys they may evict (like Redis's
+    // db->expires). Without it, a few TTL keys among many would rarely be sampled at all.
+    private readonly SampledKeySet _volatileKeys = new();
     private long _memoryUsage;
     private long _evictedKeys;
 
@@ -71,7 +78,7 @@ public sealed partial class Keyspace
         string? best = null;
         long bestScore = long.MaxValue;
 
-        foreach (string key in _sampledKeys.Sample(samples))
+        foreach (string key in (volatileOnly ? _volatileKeys : _sampledKeys).Sample(samples))
         {
             // Peek without the stripe: a stale read only makes a slightly worse choice, and
             // TryEvict re-checks under the lock.
@@ -136,15 +143,25 @@ public sealed partial class Keyspace
 
     private static long EstimateStreamSize(StreamLog log)
     {
+        // Consumer groups grow independently of the entries: every unacknowledged delivery
+        // adds a pending entry, so they must count too.
+        long groups = 0;
+        foreach ((string name, StreamConsumerGroup group) in log.Groups)
+        {
+            groups += GroupOverhead + (2L * name.Length) +
+                      (group.Consumers.Count * ConsumerOverhead) +
+                      (group.Pending.Count * PendingEntryOverhead);
+        }
+
         if (log.Count == 0)
         {
-            return StreamEntryOverhead;
+            return StreamEntryOverhead + groups;
         }
 
         // The newest entry is the best guide to what the stream holds now.
         StreamEntry sample = log.Entries[^1];
         long perEntry = StreamEntryOverhead + sample.Fields.Sum(f => (2 * StringOverhead) + (2L * (f.Key.Length + f.Value.Length)));
-        return log.Count * perEntry;
+        return (log.Count * perEntry) + groups;
     }
 
     private static IEnumerable<string> SampleList(LinkedList<string> list)

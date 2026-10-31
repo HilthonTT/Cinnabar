@@ -112,16 +112,25 @@ internal sealed class TcpServer(
         }
         finally
         {
-            broker.UnsubscribeAll(session);
-            broker.PatternUnsubscribeAll(session);
-            master.RemoveReplica(session);
-            await session.DisposeAsync();
-
-            ipGuard.ReleaseConnection(session.RemoteAddress);
-            metrics.ActiveConnections.Dec();
-            _connections.TryRemove(session.Id, out _);
-            completion.TrySetResult();
-            logger.LogDebug("Client {SessionId} disconnected.", session.Id);
+            try
+            {
+                broker.UnsubscribeAll(session);
+                broker.PatternUnsubscribeAll(session);
+                master.RemoveReplica(session);
+                await session.DisposeAsync();
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Cleanup of client {SessionId} failed.", session.Id);
+            }
+            finally
+            {
+                ipGuard.ReleaseConnection(session.RemoteAddress);
+                metrics.ActiveConnections.Dec();
+                _connections.TryRemove(session.Id, out _);
+                completion.TrySetResult();
+                logger.LogDebug("Client {SessionId} disconnected.", session.Id);
+            }
         }
     }
 

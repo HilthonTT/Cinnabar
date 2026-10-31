@@ -29,7 +29,32 @@ public static class DoubleText
             return true;
         }
 
-        return double.TryParse(text, Styles, CultureInfo.InvariantCulture, out value) && !double.IsNaN(value);
+        if (!double.TryParse(text, Styles, CultureInfo.InvariantCulture, out value) || double.IsNaN(value))
+        {
+            return false;
+        }
+
+        // .NET turns overflow into infinity and underflow into zero; Redis treats both as
+        // out of range (inf is only accepted when spelled out, handled above).
+        return !double.IsInfinity(value) && (value != 0 || !HasNonZeroMantissa(text));
+    }
+
+    private static bool HasNonZeroMantissa(string text)
+    {
+        foreach (char c in text)
+        {
+            if (c is 'e' or 'E')
+            {
+                break;
+            }
+
+            if (c is >= '1' and <= '9')
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

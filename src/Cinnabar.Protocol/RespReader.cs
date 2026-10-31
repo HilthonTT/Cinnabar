@@ -289,7 +289,8 @@ public static class RespReader
             return true;
         }
 
-        if (reader.Remaining > options.MaxLineLength)
+        // A line of exactly the limit may still be waiting for its LF after the CR arrived.
+        if (reader.Remaining > options.MaxLineLength + 1)
         {
             throw new RespProtocolException($"Line exceeds the limit of {options.MaxLineLength} bytes.");
         }

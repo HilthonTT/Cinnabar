@@ -14,7 +14,9 @@ internal sealed class ConnectedReplica(ClientSession session, long startOffset, 
     private readonly Channel<byte[]> _queue =
         Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
 
-    private long _ackOffset = startOffset;
+    // Nothing is acknowledged until the replica has loaded the snapshot and sent REPLCONF ACK;
+    // starting at the snapshot offset would let WAIT count a replica that is still loading.
+    private long _ackOffset;
     private Task? _sendLoop;
 
     /// <summary>The replica's connection.</summary>

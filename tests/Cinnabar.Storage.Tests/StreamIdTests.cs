@@ -119,19 +119,29 @@ public class StreamIdTests
     }
 
     [Fact]
-    public void Exclusive_start_at_max_saturates()
+    public void Exclusive_start_at_max_is_invalid()
     {
-        StreamId.TryParseRangeBound("(+", isStart: true, out StreamId? id).Should().BeTrue();
-
-        id.Should().Be(StreamId.Max);
+        // Redis: "invalid start ID for the interval" — nothing comes after the maximum ID.
+        StreamId.TryParseRangeBound("(+", isStart: true, out _).Should().BeFalse();
+        StreamId.TryParseRangeBound("(18446744073709551615-18446744073709551615", isStart: true, out _).Should().BeFalse();
     }
 
     [Fact]
-    public void Exclusive_end_at_min_saturates()
+    public void Exclusive_end_at_min_is_invalid()
     {
-        StreamId.TryParseRangeBound("(-", isStart: false, out StreamId? id).Should().BeTrue();
+        // Redis: "invalid end ID for the interval" — nothing comes before 0-0.
+        StreamId.TryParseRangeBound("(-", isStart: false, out _).Should().BeFalse();
+        StreamId.TryParseRangeBound("(0-0", isStart: false, out _).Should().BeFalse();
+    }
 
-        id.Should().Be(StreamId.Min);
+    [Fact]
+    public void Exclusive_min_start_and_max_end_are_valid()
+    {
+        StreamId.TryParseRangeBound("(-", isStart: true, out StreamId? start).Should().BeTrue();
+        StreamId.TryParseRangeBound("(+", isStart: false, out StreamId? end).Should().BeTrue();
+
+        start.Should().Be(new StreamId(0, 1));
+        end.Should().Be(new StreamId(ulong.MaxValue, ulong.MaxValue - 1));
     }
 
     [Theory]

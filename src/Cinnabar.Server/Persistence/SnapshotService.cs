@@ -10,8 +10,9 @@ namespace Cinnabar.Server.Persistence;
 /// Loads the RDB snapshot at startup and writes it on SAVE/BGSAVE, on a timer, and at shutdown.
 /// </summary>
 /// <remarks>
-/// The keys are copied while holding the <see cref="TransactionGate"/>, so a snapshot never
-/// contains half of a MULTI/EXEC transaction. The copy is taken before waiting for the file
+/// The keys are copied while holding the <see cref="TransactionGate"/> exclusively, so the copy
+/// is a single point in time: it never contains half of a MULTI/EXEC transaction, and a
+/// multi-key command (RENAME, LMOVE, ...) cannot move data past the copy. The copy is taken before waiting for the file
 /// lock (waiting for the lock while holding the gate could deadlock with EXEC), and a copy
 /// that is older than the last file written is not written.
 /// </remarks>
@@ -30,6 +31,7 @@ internal sealed class SnapshotService(
     private int _disposeState;
     private Task? _periodicSaves;
     private Task? _backgroundSave;
+    private readonly Lock _backgroundSaveLock = new();
 
     /// <summary>When the last successful save finished, if any.</summary>
     public DateTimeOffset? LastSave { get; private set; }
@@ -77,8 +79,8 @@ internal sealed class SnapshotService(
     /// <summary>Writes the snapshot now (SAVE, shutdown).</summary>
     /// <param name="cancellationToken">Cancels the save.</param>
     /// <param name="callerHoldsGate">
-    /// The caller already holds the <see cref="TransactionGate"/> (the SAVE command does), so
-    /// the keys are copied without entering it again.
+    /// The caller already holds the <see cref="TransactionGate"/> exclusively (SAVE inside
+    /// EXEC does), so the keys are copied without entering it again.
     /// </param>
     public async Task<RdbWriteResult> SaveAsync(CancellationToken cancellationToken = default, bool callerHoldsGate = false)
     {
@@ -90,7 +92,7 @@ internal sealed class SnapshotService(
         }
         else
         {
-            using (await gate.EnterSharedAsync(cancellationToken))
+            using (await gate.EnterExclusiveAsync(cancellationToken))
             {
                 (keys, sequence) = CopyKeys();
             }
@@ -132,24 +134,27 @@ internal sealed class SnapshotService(
     /// <returns><see langword="false"/> if one is already running.</returns>
     public bool TryStartBackgroundSave()
     {
-        if (IsBackgroundSaveRunning)
+        lock (_backgroundSaveLock)
         {
-            return false;
+            if (IsBackgroundSaveRunning)
+            {
+                return false;
+            }
+
+            _backgroundSave = Task.Run(async () =>
+            {
+                try
+                {
+                    await SaveAsync(_stop.Token);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    logger.LogError(e, "Background save failed.");
+                }
+            });
+
+            return true;
         }
-
-        _backgroundSave = Task.Run(async () =>
-        {
-            try
-            {
-                await SaveAsync(_stop.Token);
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                logger.LogError(e, "Background save failed.");
-            }
-        });
-
-        return true;
     }
 
     /// <summary>Starts periodic saves if <c>SaveIntervalSeconds</c> is set.</summary>

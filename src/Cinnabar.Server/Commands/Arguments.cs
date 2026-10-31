@@ -16,15 +16,31 @@ internal static class Arguments
     public static bool Is(string argument, string keyword) =>
         string.Equals(argument, keyword, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Parses an integer as strictly as Redis (no <c>+</c>, leading zeros or <c>-0</c>).</summary>
     public static long ParseLong(string text) =>
-        long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long value)
-            ? value
-            : throw new StorageException(NotAnInteger);
+        IntegerText.TryParse(text, out long value) ? value : throw new StorageException(NotAnInteger);
 
-    public static int ParseInt(string text) =>
-        int.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int value)
-            ? value
-            : throw new StorageException(NotAnInteger);
+    public static int ParseInt(string text)
+    {
+        long value = ParseLong(text);
+        return value is >= int.MinValue and <= int.MaxValue ? (int)value : throw new StorageException(NotAnInteger);
+    }
+
+    /// <summary>
+    /// Parses a stream read COUNT (XREAD, XREADGROUP): like Redis, zero or a negative count
+    /// means no limit.
+    /// </summary>
+    public static int? ParseReadCount(string text)
+    {
+        long value = ParseLong(text);
+        return value <= 0 ? null : (int)Math.Min(value, int.MaxValue);
+    }
+
+    /// <summary>
+    /// The longest wait a timer supports (about 49.7 days). Longer timeouts block forever, which
+    /// is indistinguishable in practice and avoids CancelAfter throwing.
+    /// </summary>
+    private const double MaxTimeoutMilliseconds = uint.MaxValue - 1;
 
     /// <summary>Parses a non-negative count (LPOP count, XRANGE COUNT, ...).</summary>
     public static int ParseCount(string text)
@@ -47,8 +63,10 @@ internal static class Arguments
             throw new StorageException("ERR timeout is negative");
         }
 
-        // 0 means "block forever".
-        return seconds == 0 ? null : TimeSpan.FromSeconds(seconds);
+        // 0 means "block forever". Like Redis, the timeout is whole milliseconds, so a positive
+        // timeout under 1 ms also means forever.
+        double ms = Math.Floor(seconds * 1000);
+        return ms == 0 || ms > MaxTimeoutMilliseconds ? null : TimeSpan.FromMilliseconds(ms);
     }
 
     /// <summary>Parses a blocking timeout in milliseconds (XREAD BLOCK, WAIT).</summary>
@@ -60,7 +78,7 @@ internal static class Arguments
             throw new StorageException("ERR timeout is negative");
         }
 
-        return ms == 0 ? null : TimeSpan.FromMilliseconds(ms);
+        return ms == 0 || ms > MaxTimeoutMilliseconds ? null : TimeSpan.FromMilliseconds(ms);
     }
 
     /// <summary>Formats a number for the wire.</summary>

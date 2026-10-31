@@ -13,7 +13,10 @@ namespace Cinnabar.Server.Networking;
 /// <remarks>
 /// Several producers write to one socket: command replies, pub/sub pushes, and (for replica
 /// connections) the replication stream. All writes go through <see cref="SendAsync"/>, which
-/// serialises them so frames never interleave.
+/// serialises them so frames never interleave. Once the session has received a push, command
+/// replies go through the same ordered queue as pushes (<see cref="SendReplyAsync"/>), so a
+/// message queued before an UNSUBSCRIBE reply can never be written after it and be mistaken
+/// for the reply to the next command.
 /// </remarks>
 internal sealed class ClientSession : IAsyncDisposable
 {
@@ -24,7 +27,7 @@ internal sealed class ClientSession : IAsyncDisposable
     private readonly CancellationTokenSource _closed = new();
     private readonly Lock _pushLock = new();
     private readonly List<Command> _queuedCommands = [];
-    private Channel<byte[]>? _pushChannel;
+    private Channel<Outgoing>? _pushChannel;
     private Task? _pushLoop;
     private int _disposed;
 
@@ -145,28 +148,84 @@ internal sealed class ClientSession : IAsyncDisposable
         {
             if (_pushChannel is null)
             {
-                _pushChannel = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+                _pushChannel = Channel.CreateUnbounded<Outgoing>(new UnboundedChannelOptions { SingleReader = true });
                 _pushLoop = Task.Run(() => PushLoopAsync(_pushChannel.Reader));
             }
 
-            return _pushChannel.Writer.TryWrite(payload);
+            return _pushChannel.Writer.TryWrite(new Outgoing(payload, Sent: null));
         }
     }
 
-    private async Task PushLoopAsync(ChannelReader<byte[]> reader)
+    /// <summary>
+    /// Writes a command reply, in order with pushes queued before it. Completes once the reply
+    /// is on the socket, so a client that does not read applies back-pressure as before.
+    /// </summary>
+    public async ValueTask SendReplyAsync(ReadOnlyMemory<byte> reply, CancellationToken cancellationToken = default)
+    {
+        Channel<Outgoing>? channel;
+        lock (_pushLock)
+        {
+            channel = _pushChannel;
+        }
+
+        if (channel is null)
+        {
+            await SendAsync(reply, cancellationToken);
+            return;
+        }
+
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!channel.Writer.TryWrite(new Outgoing(reply, sent)))
+        {
+            return; // Closed.
+        }
+
+        using (Closed.Register(() => sent.TrySetCanceled()))
+        {
+            await sent.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private async Task PushLoopAsync(ChannelReader<Outgoing> reader)
     {
         try
         {
-            await foreach (byte[] payload in reader.ReadAllAsync(Closed))
+            await foreach (Outgoing item in reader.ReadAllAsync(Closed))
             {
-                await SendAsync(payload, Closed);
+                // A push that was queued before the last UNSUBSCRIBE took effect would be read
+                // as a command reply by a client that has left subscribed mode.
+                if (item.Sent is null && !InSubscribedMode)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    await SendAsync(item.Payload, Closed);
+                    item.Sent?.TrySetResult();
+                }
+                catch (Exception e)
+                {
+                    item.Sent?.TrySetException(e);
+                    throw;
+                }
             }
         }
         catch (Exception e) when (e is OperationCanceledException or SocketException or ObjectDisposedException)
         {
             // Session closed.
         }
+        finally
+        {
+            while (reader.TryRead(out Outgoing left))
+            {
+                left.Sent?.TrySetCanceled();
+            }
+        }
     }
+
+    /// <summary>A queued write: a pub/sub push, or a command reply whose writer awaits <paramref name="Sent"/>.</summary>
+    private readonly record struct Outgoing(ReadOnlyMemory<byte> Payload, TaskCompletionSource? Sent);
 
     /// <summary>Writes bytes to the socket. Safe to call from several threads.</summary>
     public async ValueTask SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)

@@ -72,6 +72,14 @@ internal sealed class ReplicationMaster(Keyspace keyspace, ServerMetrics metrics
                 lock (_propagateLock)
                 {
                     var newReplica = new ConnectedReplica(session, _offset, logger);
+
+                    // A second PSYNC on the same connection: stop the old stream, or two send
+                    // loops would interleave on one socket.
+                    if (_replicas.TryGetValue(session.Id, out ConnectedReplica? previous))
+                    {
+                        previous.Stop();
+                    }
+
                     _replicas[session.Id] = newReplica;
                     return (keyspace.Snapshot(), _offset, newReplica);
                 }

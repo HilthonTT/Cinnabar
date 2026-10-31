@@ -75,15 +75,20 @@ public sealed class ReplicationMasterTests : DispatcherTestBase
     }
 
     [Fact]
-    public async Task Replica_starts_with_ack_at_sync_offset()
+    public async Task Replica_is_not_acknowledged_until_it_sends_an_ack()
     {
-        Master.Propagate(new Command("SET", "a", "1"));
+        long offset = Master.Propagate(new Command("SET", "a", "1"));
 
-        await ConnectReplica();
+        ClientSession session = await ConnectReplica();
 
+        // The snapshot is still in flight: WAIT must not count this replica yet.
         ConnectedReplica replica = Master.Replicas.Single();
         replica.StartOffset.Should().Be(Master.Offset);
-        replica.AckOffset.Should().Be(Master.Offset);
+        replica.AckOffset.Should().Be(0);
+        Master.CountAcknowledged(offset).Should().Be(0);
+
+        Master.Acknowledge(session, Master.Offset);
+        Master.CountAcknowledged(offset).Should().Be(1);
     }
 
     [Fact]

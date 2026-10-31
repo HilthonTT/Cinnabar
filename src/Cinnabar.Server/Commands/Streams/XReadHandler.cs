@@ -29,7 +29,7 @@ internal sealed class XReadHandler(Keyspace keyspace, KeyNotifier notifier, Tran
         {
             if (Arguments.Is(command[cursor], "COUNT") && cursor + 1 < command.Count)
             {
-                count = Arguments.ParseCount(command[cursor + 1]);
+                count = Arguments.ParseReadCount(command[cursor + 1]);
             }
             else if (Arguments.Is(command[cursor], "BLOCK") && cursor + 1 < command.Count)
             {

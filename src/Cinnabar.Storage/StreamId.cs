@@ -91,8 +91,9 @@ public readonly record struct StreamId(ulong Milliseconds, ulong Sequence) : ICo
             return true;
         }
 
-        // "(id" as a start means "after id"; as an end it means "before id".
-        id = isStart ? bound.Next() ?? Max : bound.Previous() ?? Min;
-        return true;
+        // "(id" as a start means "after id"; as an end it means "before id". There is nothing
+        // after the maximum ID or before 0-0, so those bounds are invalid as in Redis.
+        id = isStart ? bound.Next() : bound.Previous();
+        return id is not null;
     }
 }

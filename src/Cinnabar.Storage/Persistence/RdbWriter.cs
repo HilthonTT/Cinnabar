@@ -36,8 +36,32 @@ public static class RdbWriter
         }
 
         string temp = path + ".tmp";
-        await File.WriteAllBytesAsync(temp, bytes, cancellationToken).ConfigureAwait(false);
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            await using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+
+                // Force the data to disk before the rename, or a crash can leave the new
+                // name pointing at an empty file after the old snapshot was replaced.
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temp, path, overwrite: true);
+        }
+        catch
+        {
+            try
+            {
+                File.Delete(temp);
+            }
+            catch (IOException)
+            {
+                // Best effort; the next save overwrites it.
+            }
+
+            throw;
+        }
         return result;
     }
 

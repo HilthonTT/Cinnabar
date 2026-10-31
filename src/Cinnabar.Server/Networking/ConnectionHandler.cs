@@ -40,7 +40,7 @@ internal sealed class ConnectionHandler(
                 {
                     // The stream can't be resynchronised after malformed input; report and close.
                     logger.LogDebug("Client {SessionId} sent malformed RESP: {Reason}", session.Id, e.Message);
-                    await session.SendAsync(RespEncoder.Error($"ERR Protocol error: {e.Message}"), token);
+                    await session.SendReplyAsync(RespEncoder.Error($"ERR Protocol error: {e.Message}"), token);
                     return;
                 }
 
@@ -56,14 +56,16 @@ internal sealed class ConnectionHandler(
                         continue; // Empty inline line.
                     }
 
-                    await session.SendAsync(RespEncoder.Error("ERR Protocol error: expected an array of bulk strings"), token);
+                    await session.SendReplyAsync(RespEncoder.Error("ERR Protocol error: expected an array of bulk strings"), token);
                     continue;
                 }
 
-                if (!ipGuard.TryConsumeCommand(session.RemoteAddress))
+                // A replica's REPLCONF ACKs are not client traffic, and an error reply written to
+                // its connection would land in its replication stream.
+                if (!session.IsReplica && !ipGuard.TryConsumeCommand(session.RemoteAddress))
                 {
                     metrics.RateLimitedTotal.Inc();
-                    await session.SendAsync(RespEncoder.Error("ERR max number of commands per second exceeded"), token);
+                    await session.SendReplyAsync(RespEncoder.Error("ERR max number of commands per second exceeded"), token);
                     continue;
                 }
 
@@ -73,7 +75,7 @@ internal sealed class ConnectionHandler(
                 }
 
                 Reply reply = await dispatcher.DispatchAsync(command, session, token);
-                await session.SendAsync(reply.Bytes, token);
+                await session.SendReplyAsync(reply.Bytes, token);
 
                 if (reply.CloseConnection)
                 {

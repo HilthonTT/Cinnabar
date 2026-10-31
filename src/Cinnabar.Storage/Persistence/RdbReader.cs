@@ -75,7 +75,10 @@ public static class RdbReader
                     break;
 
                 case OpExpireTimeMs:
-                    pendingExpiry = DateTimeOffset.FromUnixTimeMilliseconds(reader.ReadInt64LittleEndian());
+                    pendingExpiry = DateTimeOffset.FromUnixTimeMilliseconds(Math.Clamp(
+                        reader.ReadInt64LittleEndian(),
+                        DateTimeOffset.MinValue.ToUnixTimeMilliseconds(),
+                        DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()));
                     break;
 
                 case OpExpireTime:

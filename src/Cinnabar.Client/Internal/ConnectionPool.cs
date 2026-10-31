@@ -54,18 +54,37 @@ internal sealed class ConnectionPool(RedisClientOptions options) : IAsyncDisposa
 
     private async ValueTask ReturnAsync(RedisConnection connection)
     {
-        if (_disposed || !connection.IsHealthy)
+        try
+        {
+            if (_disposed || !connection.IsHealthy)
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                _idle.Add(connection);
+
+                // DisposeAsync may have drained the idle set between the check and the Add.
+                if (_disposed)
+                {
+                    await DrainIdleAsync().ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _slots.Release();
+            }
+        }
+    }
+
+    private async ValueTask DrainIdleAsync()
+    {
+        while (_idle.TryTake(out RedisConnection? connection))
         {
             await connection.DisposeAsync().ConfigureAwait(false);
-        }
-        else
-        {
-            _idle.Add(connection);
-        }
-
-        if (!_disposed)
-        {
-            _slots.Release();
         }
     }
 
@@ -77,10 +96,7 @@ internal sealed class ConnectionPool(RedisClientOptions options) : IAsyncDisposa
         }
 
         _disposed = true;
-        while (_idle.TryTake(out RedisConnection? connection))
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-        }
+        await DrainIdleAsync().ConfigureAwait(false);
     }
 
     /// <summary>A leased connection; disposing returns it to the pool.</summary>

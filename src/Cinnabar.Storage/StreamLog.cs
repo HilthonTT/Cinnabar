@@ -119,7 +119,7 @@ internal sealed class StreamLog
         StreamId candidate;
         if (requestedId.EndsWith("-*", StringComparison.Ordinal))
         {
-            if (!StreamId.TryParse(requestedId[..^2], 0, out StreamId prefix))
+            if (requestedId[..^2].Contains('-') || !StreamId.TryParse(requestedId[..^2], 0, out StreamId prefix))
             {
                 throw InvalidId();
             }

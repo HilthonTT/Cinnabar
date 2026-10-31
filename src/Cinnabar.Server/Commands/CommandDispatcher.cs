@@ -85,21 +85,24 @@ internal sealed class CommandDispatcher
             return Reject(session, Reply.Error($"ERR wrong number of arguments for '{command.Name.ToLowerInvariant()}' command"));
         }
 
-        if (session.InSubscribedMode && !spec.Flags.HasFlag(CommandFlags.PubSub))
+        // Checked when a command arrives, not when EXEC replays it after a queued SUBSCRIBE.
+        if (session.InSubscribedMode && !session.IsExecuting && !spec.Flags.HasFlag(CommandFlags.PubSub))
         {
             return Reply.Error(
                 $"ERR Can't execute '{command.Name.ToLowerInvariant()}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context");
+        }
+
+        // Before queueing, so a write queued on a replica makes EXEC abort as in Redis instead
+        // of applying the transaction partly.
+        if (spec.Flags.HasFlag(CommandFlags.Write) && _settings.Replication.IsReplica && !session.IsReplicationLink)
+        {
+            return Reject(session, Reply.Error("READONLY You can't write against a read only replica."));
         }
 
         if (session.InTransaction && !spec.Flags.HasFlag(CommandFlags.Transaction))
         {
             session.Enqueue(command);
             return Reply.Queued;
-        }
-
-        if (spec.Flags.HasFlag(CommandFlags.Write) && _settings.Replication.IsReplica && !session.IsReplicationLink)
-        {
-            return Reply.Error("READONLY You can't write against a read only replica.");
         }
 
         return await ExecuteAsync(registered, command, session, cancellationToken);

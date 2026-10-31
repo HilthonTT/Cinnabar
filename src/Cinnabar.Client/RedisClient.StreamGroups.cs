@@ -218,7 +218,7 @@ public sealed partial class RedisClient
 
         if (block is { } wait)
         {
-            command.AddRange(["BLOCK", Format((long)wait.TotalMilliseconds)]);
+            command.AddRange(["BLOCK", Format(PositiveMilliseconds(wait))]);
         }
     }
 

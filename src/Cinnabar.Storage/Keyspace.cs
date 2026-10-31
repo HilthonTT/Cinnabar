@@ -167,6 +167,7 @@ public sealed partial class Keyspace : IDisposable
             }
 
             entry.ExpiresAtMs = unixTimeMilliseconds;
+            TrackExpiry(key, unixTimeMilliseconds);
             Touch(entry);
             return true;
         }
@@ -184,6 +185,7 @@ public sealed partial class Keyspace : IDisposable
             }
 
             entry.ExpiresAtMs = NoExpiry;
+            TrackExpiry(key, NoExpiry);
             Touch(entry);
             return true;
         }
@@ -291,7 +293,7 @@ public sealed partial class Keyspace : IDisposable
                     throw new WrongTypeException();
                 }
 
-                if (!long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out current))
+                if (!IntegerText.TryParse(text, out current))
                 {
                     throw new StorageException("ERR value is not an integer or out of range");
                 }
@@ -667,9 +669,12 @@ public sealed partial class Keyspace : IDisposable
                     continue;
                 }
 
+                // Expiry can be any long (PEXPIREAT accepts far-future times), but
+                // DateTimeOffset stops at year 9999; such keys effectively never expire.
                 DateTimeOffset? expiresAt = entry.ExpiresAtMs == NoExpiry
                     ? null
-                    : DateTimeOffset.FromUnixTimeMilliseconds(entry.ExpiresAtMs);
+                    : DateTimeOffset.FromUnixTimeMilliseconds(
+                        Math.Clamp(entry.ExpiresAtMs, 0, DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()));
 
                 KeySnapshot? snapshot = entry.Value switch
                 {
@@ -790,6 +795,7 @@ public sealed partial class Keyspace : IDisposable
     {
         var entry = new Entry(key, value, expiresAtMs, NextVersion()) { LastAccessMs = NowMs };
         entry.Size = EstimateSize(key, value);
+        TrackExpiry(key, expiresAtMs);
 
         if (_entries.TryGetValue(key, out Entry? previous))
         {
@@ -802,6 +808,19 @@ public sealed partial class Keyspace : IDisposable
         }
 
         _entries[key] = entry;
+    }
+
+    /// <summary>Keeps the set of keys with a TTL in step with a key's expiry. Caller must hold the key's stripe.</summary>
+    private void TrackExpiry(string key, long expiresAtMs)
+    {
+        if (expiresAtMs == NoExpiry)
+        {
+            _volatileKeys.Remove(key);
+        }
+        else
+        {
+            _volatileKeys.Add(key);
+        }
     }
 
     /// <summary>
@@ -836,6 +855,7 @@ public sealed partial class Keyspace : IDisposable
 
         Interlocked.Add(ref _memoryUsage, -removed.Size);
         _sampledKeys.Remove(key);
+        _volatileKeys.Remove(key);
 
         if (_watchCounts.ContainsKey(key))
         {

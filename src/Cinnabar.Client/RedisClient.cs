@@ -79,7 +79,7 @@ public sealed partial class RedisClient : IAsyncDisposable
 
     /// <summary><c>PEXPIRE key ms</c>: <see langword="true"/> if the key exists and the TTL was set.</summary>
     public async Task<bool> ExpireAsync(string key, TimeSpan ttl, CancellationToken cancellationToken = default) =>
-        (await ExecuteAsync(["PEXPIRE", key, Format((long)ttl.TotalMilliseconds)], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
+        (await ExecuteAsync(["PEXPIRE", key, Format(PositiveMilliseconds(ttl))], cancellationToken).ConfigureAwait(false)).AsLong() == 1;
 
     /// <summary><c>UNLINK key [key ...]</c>: like DEL; the number of keys removed.</summary>
     public async Task<long> UnlinkAsync(params string[] keys) =>
@@ -256,7 +256,7 @@ public sealed partial class RedisClient : IAsyncDisposable
         TimeSpan? timeout,
         CancellationToken cancellationToken = default)
     {
-        string seconds = timeout is { } t ? t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) : "0";
+        string seconds = BlockSeconds(timeout);
         RespValue reply = await ExecuteAsync(["BLPOP", .. keys, seconds], cancellationToken).ConfigureAwait(false);
 
         return reply.IsNull || reply.AsArray() is not [var key, var value]
@@ -349,7 +349,7 @@ public sealed partial class RedisClient : IAsyncDisposable
         TimeSpan? timeout,
         CancellationToken cancellationToken = default)
     {
-        string seconds = timeout is { } t ? t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) : "0";
+        string seconds = BlockSeconds(timeout);
         return (await ExecuteAsync(["BLMOVE", source, destination, Side(fromLeft), Side(toLeft), seconds], cancellationToken)
             .ConfigureAwait(false)).AsString();
     }
@@ -580,6 +580,20 @@ public sealed partial class RedisClient : IAsyncDisposable
 
     private static string Format(long value) => value.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// Whole milliseconds for a positive duration, rounded up to at least 1: truncating a
+    /// sub-millisecond value to 0 would mean "forever" for blocking commands and "delete now"
+    /// for PEXPIRE.
+    /// </summary>
+    private static long PositiveMilliseconds(TimeSpan value) =>
+        value > TimeSpan.Zero ? Math.Max(1, (long)Math.Ceiling(value.TotalMilliseconds)) : (long)value.TotalMilliseconds;
+
+    /// <summary>A blocking-command timeout in seconds; <see langword="null"/> waits forever (0).</summary>
+    private static string BlockSeconds(TimeSpan? timeout) =>
+        timeout is { } t
+            ? (PositiveMilliseconds(t) / 1000.0).ToString("0.###", CultureInfo.InvariantCulture)
+            : "0";
+
     private static IEnumerable<string> Flatten(IEnumerable<KeyValuePair<string, string>> pairs) =>
         pairs.SelectMany(pair => new[] { pair.Key, pair.Value });
 
@@ -588,7 +602,8 @@ public sealed partial class RedisClient : IAsyncDisposable
         var entries = new List<RedisStreamEntry>();
         foreach (RespValue entry in reply.AsArray())
         {
-            if (entry.AsArray() is not [var id, var fieldList])
+            // Redis 6.2 XAUTOCLAIM/XCLAIM return nil for pending entries that were deleted.
+            if (entry.IsNull || entry.AsArray() is not [var id, var fieldList])
             {
                 continue;
             }

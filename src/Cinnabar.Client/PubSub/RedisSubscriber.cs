@@ -64,6 +64,12 @@ public sealed class RedisSubscriber : IAsyncDisposable
                 {
                     confirmed++;
                 }
+                else
+                {
+                    // A message on an already-confirmed channel can arrive before the
+                    // remaining confirmations; keep it.
+                    subscriber.TryDeliver(reply);
+                }
             }
         }
         catch
@@ -121,20 +127,7 @@ public sealed class RedisSubscriber : IAsyncDisposable
             while (!_stop.IsCancellationRequested)
             {
                 RespValue push = await _connection.ReadAsync(_stop.Token).ConfigureAwait(false);
-                string? kind = Kind(push);
-                if (kind == "message" && push.Elements is [_, var channel, var payload] &&
-                    channel.AsString() is { } channelName && payload.AsString() is { } text)
-                {
-                    _messages.Writer.TryWrite(new RedisMessage(channelName, text));
-                }
-                else if (kind == "pmessage" && push.Elements is [_, var pattern, var matched, var body] &&
-                         pattern.AsString() is { } patternText && matched.AsString() is { } matchedChannel &&
-                         body.AsString() is { } bodyText)
-                {
-                    _messages.Writer.TryWrite(new RedisMessage(matchedChannel, bodyText, patternText));
-                }
-
-                // (p)subscribe/(p)unsubscribe confirmations need no action.
+                TryDeliver(push);
             }
         }
         catch (Exception e) when (e is RedisConnectionException || _stop.IsCancellationRequested)
@@ -144,6 +137,26 @@ public sealed class RedisSubscriber : IAsyncDisposable
         finally
         {
             _messages.Writer.TryComplete();
+        }
+    }
+
+    /// <summary>
+    /// Queues a <c>message</c>/<c>pmessage</c> push; (p)subscribe/(p)unsubscribe
+    /// confirmations need no action.
+    /// </summary>
+    private void TryDeliver(RespValue push)
+    {
+        string? kind = Kind(push);
+        if (kind == "message" && push.Elements is [_, var channel, var payload] &&
+            channel.AsString() is { } channelName && payload.AsString() is { } text)
+        {
+            _messages.Writer.TryWrite(new RedisMessage(channelName, text));
+        }
+        else if (kind == "pmessage" && push.Elements is [_, var pattern, var matched, var body] &&
+                 pattern.AsString() is { } patternText && matched.AsString() is { } matchedChannel &&
+                 body.AsString() is { } bodyText)
+        {
+            _messages.Writer.TryWrite(new RedisMessage(matchedChannel, bodyText, patternText));
         }
     }
 
